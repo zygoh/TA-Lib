@@ -1,0 +1,7 @@
+{
+  "binance_api_url": "https://n8n.do2ge.com/binance",
+  "thread_pool_size": 10,
+  "request_timeout": 30,
+  "retry_attempts": 3,
+  "retry_delay": 1
+}

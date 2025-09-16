@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  ta-lib-api:
+    build: .
+    container_name: ta-lib-api
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./logs:/app/logs
+      - ./config.json:/app/config.json:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - ta-lib-network
+
+networks:
+  ta-lib-network:
+    driver: bridge

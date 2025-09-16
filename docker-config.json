@@ -1,0 +1,7 @@
+{
+  "binance_api_url": "https://fapi.binance.com",
+  "thread_pool_size": 20,
+  "request_timeout": 30,
+  "retry_attempts": 3,
+  "retry_delay": 1
+}
