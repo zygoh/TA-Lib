@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装TA-Lib (最新版本 0.6.4)
-RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.6.4-src.tar.gz && \
+RUN wget https://github.com/ta-lib/ta-lib/releases/download/v0.6.4/ta-lib-0.6.4-src.tar.gz && \
     tar -xzf ta-lib-0.6.4-src.tar.gz && \
     cd ta-lib && \
     ./configure --prefix=/usr && \
