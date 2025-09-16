@@ -14,12 +14,12 @@ RUN apt-get update && apt-get install -y \
 # 安装TA-Lib (最新版本 0.6.4)
 RUN wget https://github.com/ta-lib/ta-lib/releases/download/v0.6.4/ta-lib-0.6.4-src.tar.gz && \
     tar -xzf ta-lib-0.6.4-src.tar.gz && \
-    cd ta-lib && \
+    cd ta-lib-0.6.4 && \
     ./configure --prefix=/usr && \
     make && \
     make install && \
     cd .. && \
-    rm -rf ta-lib ta-lib-0.6.4-src.tar.gz
+    rm -rf ta-lib-0.6.4 ta-lib-0.6.4-src.tar.gz
 
 # 安装Python依赖
 COPY requirements.txt .
