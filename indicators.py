@@ -54,21 +54,25 @@ class TechnicalIndicators:
     @staticmethod
     def sma(data: pd.Series, period: int) -> pd.Series:
         """简单移动平均线"""
+        data = ensure_float64(data)
         return pd.Series(talib.SMA(data.values, timeperiod=period), index=data.index)
     
     @staticmethod
     def ema(data: pd.Series, period: int) -> pd.Series:
         """指数移动平均线"""
+        data = ensure_float64(data)
         return pd.Series(talib.EMA(data.values, timeperiod=period), index=data.index)
     
     @staticmethod
     def rsi(data: pd.Series, period: int = 14) -> pd.Series:
         """相对强弱指数"""
+        data = ensure_float64(data)
         return pd.Series(talib.RSI(data.values, timeperiod=period), index=data.index)
     
     @staticmethod
     def bollinger_bands(data: pd.Series, period: int = 20, std_dev: float = 2) -> Dict[str, pd.Series]:
         """布林带"""
+        data = ensure_float64(data)
         upper, middle, lower = talib.BBANDS(data.values, timeperiod=period, nbdevup=std_dev, nbdevdn=std_dev)
         return {
             'upper': pd.Series(upper, index=data.index),
@@ -79,6 +83,7 @@ class TechnicalIndicators:
     @staticmethod
     def macd(data: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> Dict[str, pd.Series]:
         """MACD指标"""
+        data = ensure_float64(data)
         macd_line, signal_line, histogram = talib.MACD(data.values, fastperiod=fast, slowperiod=slow, signalperiod=signal)
         return {
             'macd': pd.Series(macd_line, index=data.index),
@@ -89,6 +94,7 @@ class TechnicalIndicators:
     @staticmethod
     def stochastic_rsi(data: pd.Series, rsi_period: int = 14, stoch_period: int = 14, k_smooth: int = 3, d_smooth: int = 3) -> Dict[str, pd.Series]:
         """随机RSI"""
+        data = ensure_float64(data)
         k_percent, d_percent = talib.STOCHRSI(data.values, timeperiod=rsi_period, fastk_period=stoch_period, fastd_period=d_smooth, fastd_matype=0)
         return {
             'k_percent': pd.Series(k_percent, index=data.index),
@@ -98,16 +104,24 @@ class TechnicalIndicators:
     @staticmethod
     def adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
         """平均趋向指数"""
+        high = ensure_float64(high)
+        low = ensure_float64(low)
+        close = ensure_float64(close)
         return pd.Series(talib.ADX(high.values, low.values, close.values, timeperiod=period), index=close.index)
     
     @staticmethod
     def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
         """平均真实波幅 (ATR)"""
+        high = ensure_float64(high)
+        low = ensure_float64(low)
+        close = ensure_float64(close)
         return pd.Series(talib.ATR(high.values, low.values, close.values, timeperiod=period), index=close.index)
     
     @staticmethod
     def obv(close: pd.Series, volume: pd.Series) -> pd.Series:
         """成交量净额 (OBV)"""
+        close = ensure_float64(close)
+        volume = ensure_float64(volume)
         if volume.isna().any():
             logger.warning("OBV 计算失败：volume 包含 NaN，使用前向填充")
             volume_filled = volume.fillna(method='ffill').fillna(0)
@@ -133,11 +147,11 @@ class TechnicalIndicators:
                 lambda x: (volume_filled.loc[x.index] * typical_price.loc[x.index]).cumsum() / volume_filled.loc[x.index].cumsum(),
                 include_groups=False
             ).reset_index(level=0, drop=True)
-            return vwap.round(2)
+            return vwap
         else:
             # 默认累积 VWAP
             vwap = (typical_price * volume_filled).cumsum() / volume_filled.cumsum()
-            return vwap.round(2)
+            return vwap
     
     @staticmethod
     def fibonacci_retracement(df: pd.DataFrame, period: int = 100) -> Dict[str, float]:
@@ -150,12 +164,22 @@ class TechnicalIndicators:
             return {f'fib_{int(r*1000):04d}': None for r in [0.236, 0.382, 0.5, 0.618, 0.786]}
         diff = swing_high - swing_low
         ratios = [0.236, 0.382, 0.5, 0.618, 0.786]
-        levels = {f'fib_{int(r*1000):04d}': round(swing_high - diff * r, 2) for r in ratios}
+        levels = {f'fib_{int(r*1000):04d}': float(swing_high - diff * r) for r in ratios}
         return levels
     
 
+def ensure_float64(data: pd.Series) -> pd.Series:
+    """确保数据为float64类型，TA-Lib要求"""
+    if data.dtype != 'float64':
+        logger.debug(f"转换数据类型从 {data.dtype} 到 float64")
+        return data.astype('float64')
+    return data
+
+def to_list_preserve_precision(series: pd.Series) -> List:
+    """转换为列表，保持原始精度"""
+    return [None if pd.isna(x) else float(x) for x in series]
+
 def validate_ohlcv_data(df: pd.DataFrame) -> bool:
-    """验证OHLCV数据的合理性"""
     try:
         # 检查价格逻辑
         if not (df['high'] >= df['low']).all():
@@ -202,6 +226,11 @@ def calculate_all_indicators(df: pd.DataFrame, config: Dict[str, Any]) -> Dict[s
         logger.warning(f"K线数据包含NaN值: {df[required_columns].isna().sum().to_dict()}")
         raise ValueError("K线数据包含NaN值")
     
+    # 确保数据类型为float64（TA-Lib要求）
+    for col in required_columns:
+        df[col] = ensure_float64(df[col])
+        logger.debug(f"列 {col} 数据类型: {df[col].dtype}")
+    
     # 验证OHLCV数据合理性
     if not validate_ohlcv_data(df):
         raise ValueError("OHLCV数据验证失败")
@@ -225,28 +254,28 @@ def calculate_all_indicators(df: pd.DataFrame, config: Dict[str, Any]) -> Dict[s
     results = {}
     
     # RSI
-    results['rsi'] = indicators.rsi(df['close'], config['rsi']).round(2).tolist()
+    results['rsi'] = to_list_preserve_precision(indicators.rsi(df['close'], config['rsi']))
     
     # SMA
-    results['sma'] = indicators.sma(df['close'], config['sma']).round(2).tolist()
+    results['sma'] = to_list_preserve_precision(indicators.sma(df['close'], config['sma']))
     
     # EMA
-    results['ema'] = indicators.ema(df['close'], config['ema']).round(2).tolist()
+    results['ema'] = to_list_preserve_precision(indicators.ema(df['close'], config['ema']))
     
     # 布林带
     bb = indicators.bollinger_bands(df['close'], config['bb'][0], config['bb'][1])
     results['bollinger_bands'] = {
-        'upper': bb['upper'].round(2).tolist(),
-        'middle': bb['middle'].round(2).tolist(),
-        'lower': bb['lower'].round(2).tolist()
+        'upper': to_list_preserve_precision(bb['upper']),
+        'middle': to_list_preserve_precision(bb['middle']),
+        'lower': to_list_preserve_precision(bb['lower'])
     }
     
     # MACD
     macd = indicators.macd(df['close'], config['macd'][0], config['macd'][1], config['macd'][2])
     results['macd'] = {
-        'macd': macd['macd'].round(2).tolist(),
-        'signal': macd['signal'].round(2).tolist(),
-        'histogram': macd['histogram'].round(2).tolist()
+        'macd': to_list_preserve_precision(macd['macd']),
+        'signal': to_list_preserve_precision(macd['signal']),
+        'histogram': to_list_preserve_precision(macd['histogram'])
     }
     
     # 随机RSI
@@ -258,24 +287,24 @@ def calculate_all_indicators(df: pd.DataFrame, config: Dict[str, Any]) -> Dict[s
         d_smooth=config['stoch_rsi']['dSmooth']
     )
     results['stochastic_rsi'] = {
-        'k_percent': stoch_rsi['k_percent'].round(2).tolist(),
-        'd_percent': stoch_rsi['d_percent'].round(2).tolist()
+        'k_percent': to_list_preserve_precision(stoch_rsi['k_percent']),
+        'd_percent': to_list_preserve_precision(stoch_rsi['d_percent'])
     }
     
     # ADX
-    results['adx'] = indicators.adx(df['high'], df['low'], df['close'], config['adx']).round(2).tolist()
+    results['adx'] = to_list_preserve_precision(indicators.adx(df['high'], df['low'], df['close'], config['adx']))
     
     # ATR
     if 'atr' in config:
-        results['atr'] = indicators.atr(df['high'], df['low'], df['close'], config['atr']['period']).round(2).tolist()
+        results['atr'] = to_list_preserve_precision(indicators.atr(df['high'], df['low'], df['close'], config['atr']['period']))
     
     # OBV
     if 'obv' in config:
-        results['obv'] = indicators.obv(df['close'], df['volume']).round(2).tolist()
+        results['obv'] = to_list_preserve_precision(indicators.obv(df['close'], df['volume']))
     
     # VWAP
     if 'vwap' in config:
-        results['vwap'] = indicators.vwap(df, config['vwap'].get('period')).tolist()
+        results['vwap'] = to_list_preserve_precision(indicators.vwap(df, config['vwap'].get('period')))
     
     # Fibonacci Retracement
     if 'fib' in config:
@@ -347,10 +376,10 @@ class BinanceClient:
                         'taker_buy_quote', 'ignore'
                     ])
                     
-                    # 转换数据类型
+                    # 转换数据类型为float64（TA-Lib要求）
                     numeric_columns = ['open', 'high', 'low', 'close', 'volume']
                     for col in numeric_columns:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                        df[col] = pd.to_numeric(df[col], errors='coerce').astype('float64')
                     
                     # 保存原始时间戳（毫秒）
                     df['timestamp_ms'] = df['timestamp'].astype(int)
@@ -467,12 +496,8 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
         key_indicators = ['rsi', 'sma', 'ema', 'macd', 'macd_signal', 'adx']
         result_df = result_df.dropna(subset=key_indicators)
         
-        # 确保 float 输出
+        # 保持原始精度输出
         results = result_df.to_dict('records')
-        for item in results:
-            for key, value in item.items():
-                if isinstance(value, float):
-                    item[key] = round(value, 2)
         
         logger.info(f"技术指标计算完成: {symbol} {interval}, 数据点数: {len(results)}")
         return {'indicators': results}
