@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 # 加载配置文件
 def load_config():
     """加载配置文件"""
-    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    # 配置文件在项目根目录的config文件夹中
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    config_path = os.path.join(project_root, 'config', 'config.json')
     default_config = {
         "binance_api_url": "https://fapi.binance.com",
         "thread_pool_size": 10,

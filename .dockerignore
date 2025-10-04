@@ -30,6 +30,7 @@ ENV/
 .idea/
 *.swp
 *.swo
+*~
 
 # OS
 .DS_Store
@@ -39,23 +40,18 @@ Thumbs.db
 .git/
 .gitignore
 
-# Docker
-Dockerfile
-docker-compose.yml
-.dockerignore
+# Documentation
+*.md
 
 # Logs
 *.log
-logs/
 
-# Documentation
-README.md
-*.md
+# Development files
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Test files
-test_*.py
-*_test.py
-
-# Temporary files
-*.tmp
-*.temp
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore

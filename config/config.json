@@ -1,5 +1,5 @@
 {
-  "binance_api_url": "https://n8n.do2ge.com/binance",
+  "binance_api_url": "https://fapi.binance.com",
   "thread_pool_size": 10,
   "request_timeout": 30,
   "retry_attempts": 3,

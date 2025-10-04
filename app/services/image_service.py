@@ -4,10 +4,11 @@ import os
 import re
 from typing import Tuple, Dict, List
 
-class TextToImageGenerator:
+class ImageGeneratorService:
     def __init__(self):
-        # 直接使用项目目录中的阿里巴巴普惠体字体
-        self.font_path = os.path.join(os.path.dirname(__file__), '阿里巴巴普惠体.otf')
+        # 字体文件在项目根目录
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        self.font_path = os.path.join(project_root, '阿里巴巴普惠体.otf')
         
         # 检查字体文件是否存在
         if not os.path.exists(self.font_path):
