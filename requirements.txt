@@ -7,3 +7,4 @@ TA-Lib>=0.6.4
 pydantic>=2.0.0
 python-multipart>=0.0.6
 Pillow>=10.1.0
+websockets>=15.0.1

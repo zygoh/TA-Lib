@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.models.schemas import HealthResponse
-from app.routers import indicators, images
+from app.routers import indicators, images, relay
 
 # 配置日志 - 只输出到控制台
 logging.basicConfig(
@@ -41,6 +41,7 @@ app.add_middleware(
 # 注册路由
 app.include_router(indicators.router)
 app.include_router(images.router)
+app.include_router(relay.router)
 
 # 基础路由
 @app.get("/", response_model=HealthResponse)
