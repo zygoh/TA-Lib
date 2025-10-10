@@ -96,15 +96,7 @@ async def websocket_proxy(websocket: WebSocket, path: str):
             pass
         print("[WS] Disconnected")
 
-
-@router.websocket("/ws/relay/{path:path}")
-async def websocket_relay_endpoint(websocket: WebSocket, path: str):
-    """WebSocket 代理转发端点（完整路径）"""
-    await websocket_proxy(websocket, path)
-
-
-@router.api_route("/http/relay/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-async def http_relay_endpoint(request: Request, path: str):
+async def http_relay(request: Request, path: str):
     """HTTP 代理转发端点"""
     # 构建目标 URL
     target_url = f"{HTTP_REMOTE_BASE}/{path}"
@@ -162,3 +154,15 @@ async def http_relay_endpoint(request: Request, path: str):
             status_code=502,
             media_type="text/plain"
         )
+
+
+@router.websocket("/ws/relay/{path:path}")
+async def websocket_relay_endpoint(websocket: WebSocket, path: str):
+    """WebSocket 代理转发端点"""
+    await websocket_proxy(websocket, path)
+
+
+@router.api_route("/http/relay/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+async def http_relay_endpoint(request: Request, path: str):
+    """HTTP 代理转发端点"""
+    return await http_relay(request, path)
