@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-WebSocket 和 HTTP 代理转发
+WebSocket 和 HTTP 代理转发（使用 curl_cffi 模拟真实浏览器 TLS 指纹）
 - WebSocket: ws://host:port/ws/relay/{path:path}
 - HTTP: http://host:port/http/relay/{path:path}
 """
@@ -10,7 +10,9 @@ from fastapi import APIRouter, WebSocket, Request
 from fastapi.responses import Response
 import asyncio
 import websockets
-import aiohttp
+import ssl
+from curl_cffi.requests import AsyncSession
+from typing import Optional
 
 router = APIRouter()
 
@@ -18,11 +20,15 @@ router = APIRouter()
 WS_REMOTE_BASE = "wss://fstream.binance.com"
 HTTP_REMOTE_BASE = "https://fapi.binance.com"
 
-# 模拟正常浏览器的请求头（不包括压缩，让 aiohttp 自动处理）
+# 模拟浏览器指纹（推荐使用较新的 Chrome 版本）
+IMPERSONATE_BROWSER = "chrome120"  # 可选: chrome110, chrome116, chrome119, edge110, safari15_3 等
+
+# 模拟正常浏览器的请求头
 BROWSER_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': '*/*',
     'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
 }
 
 # 不应该转发的请求头（会暴露客户端身份）
@@ -63,8 +69,7 @@ async def relay(client_ws: WebSocket, remote_ws):
 
 
 async def websocket_proxy(websocket: WebSocket, path: str):
-    """WebSocket 代理核心逻辑"""
-    # 构建目标 URL
+    """WebSocket 代理核心逻辑（支持自动重连）"""
     target_url = f"{WS_REMOTE_BASE}/{path}"
     if websocket.query_params:
         from urllib.parse import urlencode
@@ -73,32 +78,82 @@ async def websocket_proxy(websocket: WebSocket, path: str):
     
     print(f"[WS] Client connecting to: {target_url}")
     
-    await websocket.accept()
+    accepted = False
+    try:
+        await websocket.accept()
+        accepted = True
+    except Exception as e:
+        print(f"[WS] Failed to accept connection: {e}")
+        return
     
     try:
-        # 使用浏览器身份连接远端（模拟正常浏览器请求）
+        # 配置 SSL 上下文，模拟浏览器 TLS 指纹
+        ssl_context = ssl.create_default_context()
+        ssl_context.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS')
+        
+        headers = {
+            'User-Agent': BROWSER_HEADERS['User-Agent'],
+            'Origin': 'https://www.binance.com',
+            'Host': 'fstream.binance.com',
+            'Accept-Encoding': 'gzip, deflate, br',
+        }
+        
         async with websockets.connect(
             target_url,
-            additional_headers={
-                'User-Agent': BROWSER_HEADERS['User-Agent'],
-                'Origin': 'https://www.binance.com',
-                'Host': 'fstream.binance.com',
-            }
+            additional_headers=headers,
+            ssl=ssl_context,
+            ping_interval=20,
+            ping_timeout=10
         ) as remote_ws:
             print(f"[WS] Connected to remote")
             await relay(websocket, remote_ws)
+    except websockets.exceptions.WebSocketException as e:
+        print(f"[WS] WebSocket error: {e}")
     except Exception as e:
-        print(f"[WS] Error: {e}")
+        print(f"[WS] Unexpected error: {e}")
     finally:
-        try:
-            await websocket.close()
-        except:
-            pass
-        print("[WS] Disconnected")
+        # 确保连接正常关闭，不影响后续重连
+        if accepted:
+            try:
+                await websocket.close()
+            except Exception:
+                # 连接可能已经关闭，忽略异常
+                pass
+        print("[WS] Disconnected (ready for reconnection)")
+
+async def _curl_request_async(
+    method: str,
+    url: str,
+    headers: dict,
+    data: Optional[bytes] = None,
+    timeout: int = 30
+) -> tuple[int, bytes, dict]:
+    """使用 curl_cffi 异步版本发送请求"""
+    try:
+        async with AsyncSession() as session:
+            resp = await session.request(
+                method=method,
+                url=url,
+                headers=headers,
+                content=data,
+                timeout=timeout,
+                allow_redirects=True,
+                impersonate=IMPERSONATE_BROWSER
+            )
+            
+            content = resp.content
+            response_headers = {
+                k: v for k, v in resp.headers.items()
+                if k.lower() not in ['transfer-encoding', 'connection', 'content-encoding']
+            }
+            return resp.status_code, content, response_headers
+    except Exception as e:
+        print(f"[HTTP] curl_cffi request error: {e}")
+        raise
+
 
 async def http_relay(request: Request, path: str):
     """HTTP 代理转发端点"""
-    # 构建目标 URL
     target_url = f"{HTTP_REMOTE_BASE}/{path}"
     if request.url.query:
         target_url += f"?{request.url.query}"
@@ -106,46 +161,34 @@ async def http_relay(request: Request, path: str):
     print(f"[HTTP] {request.method} {target_url}")
     
     try:
-        async with aiohttp.ClientSession() as session:
-            # 准备请求头：只保留业务相关的，过滤掉暴露身份的
-            headers = BROWSER_HEADERS.copy()
-            
-            # 只保留业务必需的请求头
-            for k, v in request.headers.items():
-                k_lower = k.lower()
-                if k_lower not in SKIP_HEADERS:
-                    # 保留 content-type, authorization 等业务头
-                    if k_lower in ['content-type', 'authorization', 'x-mbx-apikey']:
-                        headers[k] = v
-            
-            # 读取请求体
-            body = await request.body()
-            
-            # 发送请求到远端
-            async with session.request(
-                method=request.method,
-                url=target_url,
-                headers=headers,
-                data=body if body else None,
-                allow_redirects=False
-            ) as resp:
-                # aiohttp 会自动解压缩，读取文本或二进制内容
-                content = await resp.read()
-                
-                # 转发响应头（排除压缩和连接相关的头）
-                response_headers = {
-                    k: v for k, v in resp.headers.items()
-                    if k.lower() not in ['transfer-encoding', 'connection', 'content-encoding']
-                }
-                
-                print(f"[HTTP] Response {resp.status}")
-                
-                # 返回响应（content 已经是解压后的）
-                return Response(
-                    content=content,
-                    status_code=resp.status,
-                    headers=response_headers
-                )
+        headers = BROWSER_HEADERS.copy()
+        
+        for k, v in request.headers.items():
+            k_lower = k.lower()
+            if k_lower not in SKIP_HEADERS:
+                if k_lower in ['content-type', 'authorization', 'x-mbx-apikey', 'accept']:
+                    headers[k] = v
+        
+        # 添加 Referer 和 Origin 头，增强浏览器真实性
+        headers['Referer'] = 'https://www.binance.com/'
+        headers['Origin'] = 'https://www.binance.com'
+        
+        body = await request.body()
+        
+        status_code, content, response_headers = await _curl_request_async(
+            method=request.method,
+            url=target_url,
+            headers=headers,
+            data=body if body else None
+        )
+        
+        print(f"[HTTP] Response {status_code}, Content-Length: {len(content)}")
+        
+        return Response(
+            content=content,
+            status_code=status_code,
+            headers=response_headers
+        )
     
     except Exception as e:
         print(f"[HTTP] Error: {e}")
@@ -158,7 +201,6 @@ async def http_relay(request: Request, path: str):
 
 @router.websocket("/ws/relay/{path:path}")
 async def websocket_relay_endpoint(websocket: WebSocket, path: str):
-    """WebSocket 代理转发端点"""
     await websocket_proxy(websocket, path)
 
 
