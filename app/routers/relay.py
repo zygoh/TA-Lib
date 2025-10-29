@@ -135,7 +135,7 @@ async def _curl_request_async(
                 method=method,
                 url=url,
                 headers=headers,
-                content=data,
+                data=data,
                 timeout=timeout,
                 allow_redirects=True,
                 impersonate=IMPERSONATE_BROWSER
