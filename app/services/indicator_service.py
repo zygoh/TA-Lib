@@ -126,7 +126,7 @@ class TechnicalIndicators:
         volume = ensure_float64(volume)
         if volume.isna().any():
             logger.warning("OBV 计算失败：volume 包含 NaN，使用前向填充")
-            volume_filled = volume.fillna(method='ffill').fillna(0)
+            volume_filled = volume.ffill().fillna(0)
             return pd.Series(talib.OBV(close.values, volume_filled.values), index=close.index)
         return pd.Series(talib.OBV(close.values, volume.values), index=close.index)
     
@@ -135,7 +135,7 @@ class TechnicalIndicators:
         """成交量加权平均价 (VWAP)，支持按日重置"""
         if df['volume'].isna().any():
             logger.warning("VWAP 计算失败：volume 包含 NaN，使用前向填充")
-            volume_filled = df['volume'].fillna(method='ffill').fillna(0)
+            volume_filled = df['volume'].ffill().fillna(0)
         else:
             volume_filled = df['volume']
             
@@ -144,11 +144,18 @@ class TechnicalIndicators:
         if period == 'day':
             # 动态按日分组，不依赖硬编码的K线数量
             df_copy = df.copy()
-            df_copy['date'] = pd.to_datetime(df_copy['timestamp'], unit='ms').dt.date
-            vwap = df_copy.groupby('date').apply(
-                lambda x: (volume_filled.loc[x.index] * typical_price.loc[x.index]).cumsum() / volume_filled.loc[x.index].cumsum(),
-                include_groups=False
-            ).reset_index(level=0, drop=True)
+            # timestamp 已经是 datetime 类型，直接提取日期
+            if pd.api.types.is_datetime64_any_dtype(df_copy['timestamp']):
+                df_copy['date'] = df_copy['timestamp'].dt.date
+            else:
+                df_copy['date'] = pd.to_datetime(df_copy['timestamp'], unit='ms').dt.date
+            
+            def calc_vwap(x):
+                vol = volume_filled.loc[x.index]
+                tp = typical_price.loc[x.index]
+                return (vol * tp).cumsum() / vol.cumsum()
+            
+            vwap = df_copy.groupby('date').apply(calc_vwap).reset_index(level=0, drop=True)
             return vwap
         else:
             # 默认累积 VWAP
