@@ -151,11 +151,14 @@ class TechnicalIndicators:
                 df_copy['date'] = pd.to_datetime(df_copy['timestamp'], unit='ms').dt.date
             
             def calc_vwap(x):
+                # x 是每个分组的 DataFrame，但我们只需要索引
+                # 通过索引访问外部的 volume_filled 和 typical_price
                 vol = volume_filled.loc[x.index]
                 tp = typical_price.loc[x.index]
                 return (vol * tp).cumsum() / vol.cumsum()
             
-            vwap = df_copy.groupby('date').apply(calc_vwap).reset_index(level=0, drop=True)
+            # 使用除了 'date' 之外的列进行 groupby，避免分组列被包含在 apply 中
+            vwap = df_copy.drop(columns=['date']).groupby(df_copy['date'], group_keys=False).apply(calc_vwap)
             return vwap
         else:
             # 默认累积 VWAP
