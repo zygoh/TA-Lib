@@ -365,23 +365,6 @@ def calculate_all_indicators(df: pd.DataFrame, config: Dict[str, Any]) -> Dict[s
     if not validate_ohlcv_data(df):
         raise ValueError("OHLCV数据验证失败")
     
-    # 计算最小所需 K 线数量
-    min_data_required = max(
-        config['rsi'] + 1,  # RSI
-        config['sma'],      # SMA
-        config['ema'],      # EMA
-        config['bb'][0],    # Bollinger Bands
-        config['macd'][1] + config['macd'][2],  # MACD
-        config['rsi'] + config['stoch_rsi']['period'] + max(config['stoch_rsi']['kSmooth'], config['stoch_rsi']['dSmooth']) - 1,  # Stochastic RSI
-        config['adx'] + 1,  # ADX
-        config.get('atr', {}).get('period', 14) + 1 if 'atr' in config else 0,  # ATR
-        # 注意：斐波那契回撤不需要额外的数据，它只是基于现有数据计算回撤位
-        max(config['turtle']['entryPeriod'], config['turtle']['exitPeriod'], config['turtle']['atrPeriod']) + 1 if 'turtle' in config else 0  # Turtle Trading
-    )
-    logger.info(f"最小所需 K 线数量: {min_data_required}, 实际: {len(df)}")
-    if len(df) < min_data_required:
-        raise ValueError(f"数据不足，需要至少 {min_data_required} 根K线，实际 {len(df)} 根")
-    
     results = {}
     
     # RSI
@@ -484,29 +467,7 @@ def calculate_all_indicators(df: pd.DataFrame, config: Dict[str, Any]) -> Dict[s
                 logger.error(f"海龟法则计算失败: {e}")
                 results['turtle'] = None
     
-    # 清理 NaN
-    results = clean_nan_values(results)
-    
     return results
-
-def clean_nan_values(data):
-    """清理数据中的NaN值，转换为None"""
-    if isinstance(data, list):
-        return [None if pd.isna(x) else x for x in data]
-    elif isinstance(data, dict):
-        return {k: clean_nan_values(v) for k, v in data.items()}
-    elif isinstance(data, pd.Series):
-        # 如果是 Series，不处理，直接返回
-        return data
-    else:
-        # 只对标量值检查 NaN
-        try:
-            if pd.isna(data):
-                return None
-        except (TypeError, ValueError):
-            # 如果 pd.isna 失败，说明不是可以检查 NaN 的类型
-            pass
-    return data
 
 class BinanceClient:
     """币安API客户端"""
@@ -698,15 +659,13 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
             # 提取最新K线的所有形态
             latest_patterns = []
             for pattern_name, pattern_values in indicators_data['patterns'].items():
-                # 获取最新值，确保是标量
-                pattern_value = pattern_values.iloc[latest_index]
-                if isinstance(pattern_value, pd.Series):
-                    pattern_value = pattern_value.iloc[0]
+                # 获取最新值并转换为整数
+                pattern_value = int(pattern_values.iloc[latest_index])
                 
                 if pattern_value != 0:
                     latest_patterns.append({
                         'name': pattern_name,
-                        'value': int(pattern_value)
+                        'value': pattern_value
                     })
             result['patterns'] = latest_patterns
         
