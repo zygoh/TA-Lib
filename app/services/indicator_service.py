@@ -179,6 +179,124 @@ class TechnicalIndicators:
         levels = {f'fib_{int(r*1000):04d}': float(swing_high - diff * r) for r in ratios}
         return levels
     
+    @staticmethod
+    def candlestick_patterns(df: pd.DataFrame) -> Dict[str, pd.Series]:
+        """
+        识别蜡烛图形态
+        
+        Args:
+            df: 包含 OHLCV 数据的 DataFrame
+            
+        Returns:
+            dict: 每个形态的识别结果 Series (100=看涨, -100=看跌, 0=无)
+        """
+        try:
+            # 确保数据类型为 float64（TA-Lib 要求）
+            open_data = df['open'].astype('float64')
+            high_data = df['high'].astype('float64')
+            low_data = df['low'].astype('float64')
+            close_data = df['close'].astype('float64')
+            
+            patterns = {}
+            
+            # 定义所有支持的蜡烛形态函数
+            pattern_functions = [
+                'CDL2CROWS', 'CDL3BLACKCROWS', 'CDL3INSIDE', 'CDL3LINESTRIKE',
+                'CDL3OUTSIDE', 'CDL3STARSINSOUTH', 'CDL3WHITESOLDIERS', 'CDLABANDONEDBABY',
+                'CDLADVANCEBLOCK', 'CDLBELTHOLD', 'CDLBREAKAWAY', 'CDLCLOSINGMARUBOZU',
+                'CDLCONCEALBABYSWALL', 'CDLCOUNTERATTACK', 'CDLDARKCLOUDCOVER', 'CDLDOJI',
+                'CDLDOJISTAR', 'CDLDRAGONFLYDOJI', 'CDLENGULFING', 'CDLEVENINGDOJISTAR',
+                'CDLEVENINGSTAR', 'CDLGAPSIDESIDEWHITE', 'CDLGRAVESTONEDOJI', 'CDLHAMMER',
+                'CDLHANGINGMAN', 'CDLHARAMI', 'CDLHARAMICROSS', 'CDLHIGHWAVE',
+                'CDLHIKKAKE', 'CDLHIKKAKEMOD', 'CDLHOMINGPIGEON', 'CDLIDENTICAL3CROWS',
+                'CDLINNECK', 'CDLINVERTEDHAMMER', 'CDLKICKING', 'CDLKICKINGBYLENGTH',
+                'CDLLADDERBOTTOM', 'CDLLONGLEGGEDDOJI', 'CDLLONGLINE', 'CDLMARUBOZU',
+                'CDLMATCHINGLOW', 'CDLMATHOLD', 'CDLMORNINGDOJISTAR', 'CDLMORNINGSTAR',
+                'CDLONNECK', 'CDLPIERCING', 'CDLRICKSHAWMAN', 'CDLRISEFALL3METHODS',
+                'CDLSEPARATINGLINES', 'CDLSHOOTINGSTAR', 'CDLSHORTLINE', 'CDLSPINNINGTOP',
+                'CDLSTALLEDPATTERN', 'CDLSTICKSANDWICH', 'CDLTAKURI', 'CDLTASUKIGAP',
+                'CDLTHRUSTING', 'CDLTRISTAR', 'CDLUNIQUE3RIVER', 'CDLUPSIDEGAP2CROWS',
+                'CDLXSIDEGAP3METHODS'
+            ]
+            
+            # 调用每个形态识别函数
+            for pattern_name in pattern_functions:
+                try:
+                    pattern_func = getattr(talib, pattern_name)
+                    result = pattern_func(open_data.values, high_data.values, low_data.values, close_data.values)
+                    patterns[pattern_name] = pd.Series(result, index=df.index)
+                except Exception as e:
+                    logger.warning(f"蜡烛形态 {pattern_name} 计算失败: {e}")
+                    patterns[pattern_name] = pd.Series(0, index=df.index)
+            
+            logger.info(f"成功识别 {len(patterns)} 种蜡烛形态")
+            return patterns
+            
+        except Exception as e:
+            logger.error(f"蜡烛形态识别失败: {e}")
+            raise
+    
+    @staticmethod
+    def turtle_trading(df: pd.DataFrame, entry_period: int, exit_period: int, atr_period: int) -> Dict[str, pd.Series]:
+        """
+        计算海龟交易法则指标
+        
+        Args:
+            df: 包含 OHLCV 数据的 DataFrame
+            entry_period: 入场周期（唐奇安通道周期）
+            exit_period: 出场周期
+            atr_period: ATR 计算周期
+            
+        Returns:
+            dict: 包含通道值、信号和 ATR 的字典
+            {
+                'upper_channel': pd.Series,  # 入场上轨
+                'lower_channel': pd.Series,  # 入场下轨
+                'exit_upper': pd.Series,     # 出场上轨
+                'exit_lower': pd.Series,     # 出场下轨
+                'atr': pd.Series,            # ATR 值
+                'entry_signal': pd.Series,   # 入场信号 (1=多头, -1=空头, 0=无)
+                'exit_signal': pd.Series     # 出场信号 (1=空头平仓, -1=多头平仓, 0=无)
+            }
+        """
+        try:
+            # 计算唐奇安通道（入场）
+            upper_channel = df['high'].rolling(window=entry_period).max()
+            lower_channel = df['low'].rolling(window=entry_period).min()
+            
+            # 计算唐奇安通道（出场）
+            exit_upper = df['high'].rolling(window=exit_period).max()
+            exit_lower = df['low'].rolling(window=exit_period).min()
+            
+            # 计算 ATR
+            atr = TechnicalIndicators.atr(df['high'], df['low'], df['close'], atr_period)
+            
+            # 计算入场信号
+            entry_signal = pd.Series(0, index=df.index)
+            entry_signal[df['close'] > upper_channel.shift(1)] = 1   # 多头入场
+            entry_signal[df['close'] < lower_channel.shift(1)] = -1  # 空头入场
+            
+            # 计算出场信号
+            exit_signal = pd.Series(0, index=df.index)
+            exit_signal[df['close'] < exit_lower.shift(1)] = -1  # 多头平仓
+            exit_signal[df['close'] > exit_upper.shift(1)] = 1   # 空头平仓
+            
+            logger.info(f"海龟交易法则计算完成: entry_period={entry_period}, exit_period={exit_period}, atr_period={atr_period}")
+            
+            return {
+                'upper_channel': upper_channel,
+                'lower_channel': lower_channel,
+                'exit_upper': exit_upper,
+                'exit_lower': exit_lower,
+                'atr': atr,
+                'entry_signal': entry_signal,
+                'exit_signal': exit_signal
+            }
+            
+        except Exception as e:
+            logger.error(f"海龟交易法则计算失败: {e}")
+            raise
+    
 
 def ensure_float64(data: pd.Series) -> pd.Series:
     """确保数据为float64类型，TA-Lib要求"""
@@ -257,7 +375,8 @@ def calculate_all_indicators(df: pd.DataFrame, config: Dict[str, Any]) -> Dict[s
         config['rsi'] + config['stoch_rsi']['period'] + max(config['stoch_rsi']['kSmooth'], config['stoch_rsi']['dSmooth']) - 1,  # Stochastic RSI
         config['adx'] + 1,  # ADX
         config.get('atr', {}).get('period', 14) + 1 if 'atr' in config else 0,  # ATR
-        config.get('fib', {}).get('period', 100) if 'fib' in config else 0  # Fibonacci
+        # 注意：斐波那契回撤不需要额外的数据，它只是基于现有数据计算回撤位
+        max(config['turtle']['entryPeriod'], config['turtle']['exitPeriod'], config['turtle']['atrPeriod']) + 1 if 'turtle' in config else 0  # Turtle Trading
     )
     logger.info(f"最小所需 K 线数量: {min_data_required}, 实际: {len(df)}")
     if len(df) < min_data_required:
@@ -322,6 +441,48 @@ def calculate_all_indicators(df: pd.DataFrame, config: Dict[str, Any]) -> Dict[s
     if 'fib' in config:
         results['fibonacci_retracement'] = indicators.fibonacci_retracement(df, config['fib']['period'])
     
+    # 蜡烛形态识别
+    if config.get('patterns'):
+        try:
+            patterns_result = indicators.candlestick_patterns(df)
+            results['patterns'] = patterns_result
+        except Exception as e:
+            logger.error(f"蜡烛形态识别失败: {e}")
+            results['patterns'] = {}
+    
+    # 海龟交易法则
+    if 'turtle' in config:
+        turtle_config = config['turtle']
+        # 检查数据是否足够
+        min_required = max(
+            turtle_config['entryPeriod'],
+            turtle_config['exitPeriod'],
+            turtle_config['atrPeriod']
+        )
+        
+        if len(df) <= min_required:
+            logger.warning(f"海龟法则数据不足: 至少需要 {min_required + 1} 根K线，实际 {len(df)} 根")
+            results['turtle'] = None
+        else:
+            try:
+                turtle_result = indicators.turtle_trading(
+                    df,
+                    turtle_config['entryPeriod'],
+                    turtle_config['exitPeriod'],
+                    turtle_config['atrPeriod']
+                )
+                results['turtle'] = {
+                    'upper_channel': to_list_preserve_precision(turtle_result['upper_channel']),
+                    'lower_channel': to_list_preserve_precision(turtle_result['lower_channel']),
+                    'exit_upper': to_list_preserve_precision(turtle_result['exit_upper']),
+                    'exit_lower': to_list_preserve_precision(turtle_result['exit_lower']),
+                    'atr': to_list_preserve_precision(turtle_result['atr']),
+                    'entry_signal': to_list_preserve_precision(turtle_result['entry_signal']),
+                    'exit_signal': to_list_preserve_precision(turtle_result['exit_signal'])
+                }
+            except Exception as e:
+                logger.error(f"海龟法则计算失败: {e}")
+                results['turtle'] = None
     
     # 清理 NaN
     results = clean_nan_values(results)
@@ -334,8 +495,17 @@ def clean_nan_values(data):
         return [None if pd.isna(x) else x for x in data]
     elif isinstance(data, dict):
         return {k: clean_nan_values(v) for k, v in data.items()}
-    elif pd.isna(data):
-        return None
+    elif isinstance(data, pd.Series):
+        # 如果是 Series，不处理，直接返回
+        return data
+    else:
+        # 只对标量值检查 NaN
+        try:
+            if pd.isna(data):
+                return None
+        except (TypeError, ValueError):
+            # 如果 pd.isna 失败，说明不是可以检查 NaN 的类型
+            pass
     return data
 
 class BinanceClient:
@@ -451,6 +621,23 @@ def validate_config(config: Dict) -> None:
         raise ValueError("vwap 必须是字典类型")
     if 'fib' in config and not isinstance(config['fib'], dict):
         raise ValueError("fib 必须是字典类型")
+    
+    # 验证蜡烛形态参数
+    if 'patterns' in config:
+        if not isinstance(config['patterns'], bool):
+            raise ValueError("patterns 必须是布尔类型")
+    
+    # 验证海龟法则参数
+    if 'turtle' in config:
+        if not isinstance(config['turtle'], dict):
+            raise ValueError("turtle 必须是字典类型")
+        
+        turtle_keys = ['entryPeriod', 'exitPeriod', 'atrPeriod']
+        for key in turtle_keys:
+            if key not in config['turtle']:
+                raise ValueError(f"turtle 中缺少必需的参数: {key}")
+            if not isinstance(config['turtle'][key], int) or config['turtle'][key] <= 0:
+                raise ValueError(f"turtle.{key} 必须是正整数")
 
 async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict[str, Any]:
     """
@@ -478,41 +665,67 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
         # 计算技术指标
         indicators_data = calculate_all_indicators(df, config)
         
-        # 构建时间序列数据
-        result_df = pd.DataFrame({
-            'timestamp': df['timestamp_ms'],
-            'close': df['close'],
-            'rsi': indicators_data['rsi'],
-            'sma': indicators_data['sma'],
-            'ema': indicators_data['ema'],
-            'bb_upper': indicators_data['bollinger_bands']['upper'],
-            'bb_basis': indicators_data['bollinger_bands']['middle'],
-            'bb_lower': indicators_data['bollinger_bands']['lower'],
-            'macd': indicators_data['macd']['macd'],
-            'macd_signal': indicators_data['macd']['signal'],
-            'macd_histogram': indicators_data['macd']['histogram'],
-            'stoch_rsi_k': indicators_data['stochastic_rsi']['k_percent'],
-            'stoch_rsi_d': indicators_data['stochastic_rsi']['d_percent'],
-            'adx': indicators_data['adx'],
-            'atr': indicators_data.get('atr', [None] * len(df)),
-            'obv': indicators_data.get('obv', [None] * len(df)),
-            'vwap': indicators_data.get('vwap', [None] * len(df))
-        })
+        # 构建最新数据点（而不是完整时间序列）
+        latest_index = -1  # 最后一个数据点
         
-        # 附加斐波那契回撤位
+        result = {
+            'timestamp': int(df['timestamp_ms'].iloc[latest_index]),
+            'close': float(df['close'].iloc[latest_index]),
+            'rsi': indicators_data['rsi'][latest_index],
+            'sma': indicators_data['sma'][latest_index],
+            'ema': indicators_data['ema'][latest_index],
+            'bb_upper': indicators_data['bollinger_bands']['upper'][latest_index],
+            'bb_basis': indicators_data['bollinger_bands']['middle'][latest_index],
+            'bb_lower': indicators_data['bollinger_bands']['lower'][latest_index],
+            'macd': indicators_data['macd']['macd'][latest_index],
+            'macd_signal': indicators_data['macd']['signal'][latest_index],
+            'macd_histogram': indicators_data['macd']['histogram'][latest_index],
+            'stoch_rsi_k': indicators_data['stochastic_rsi']['k_percent'][latest_index],
+            'stoch_rsi_d': indicators_data['stochastic_rsi']['d_percent'][latest_index],
+            'adx': indicators_data['adx'][latest_index],
+            'atr': indicators_data.get('atr', [None] * len(df))[latest_index],
+            'obv': indicators_data.get('obv', [None] * len(df))[latest_index],
+            'vwap': indicators_data.get('vwap', [None] * len(df))[latest_index]
+        }
+        
+        # 添加斐波那契回撤位（如果存在）
         if 'fibonacci_retracement' in indicators_data:
             for level, value in indicators_data['fibonacci_retracement'].items():
-                result_df[level] = value
+                result[level] = value
         
-        # 过滤 null 数据（仅保留关键指标非 null 的行，避免过度过滤）
-        key_indicators = ['rsi', 'sma', 'ema', 'macd', 'macd_signal', 'adx']
-        result_df = result_df.dropna(subset=key_indicators)
+        # 添加蜡烛形态（如果启用）
+        if 'patterns' in indicators_data:
+            # 提取最新K线的所有形态
+            latest_patterns = []
+            for pattern_name, pattern_values in indicators_data['patterns'].items():
+                # 获取最新值，确保是标量
+                pattern_value = pattern_values.iloc[latest_index]
+                if isinstance(pattern_value, pd.Series):
+                    pattern_value = pattern_value.iloc[0]
+                
+                if pattern_value != 0:
+                    latest_patterns.append({
+                        'name': pattern_name,
+                        'value': int(pattern_value)
+                    })
+            result['patterns'] = latest_patterns
         
-        # 保持原始精度输出
-        results = result_df.to_dict('records')
+        # 添加海龟法则（如果启用）
+        if 'turtle' in indicators_data:
+            turtle_data = indicators_data['turtle']
+            if turtle_data is not None and isinstance(turtle_data, dict):
+                result['turtle'] = {
+                    'upper_channel': turtle_data['upper_channel'][latest_index],
+                    'lower_channel': turtle_data['lower_channel'][latest_index],
+                    'exit_upper': turtle_data['exit_upper'][latest_index],
+                    'exit_lower': turtle_data['exit_lower'][latest_index],
+                    'atr': turtle_data['atr'][latest_index],
+                    'entry_signal': turtle_data['entry_signal'][latest_index],
+                    'exit_signal': turtle_data['exit_signal'][latest_index]
+                }
         
-        logger.info(f"技术指标计算完成: {symbol} {interval}, 数据点数: {len(results)}")
-        return {'indicators': results}
+        logger.info(f"技术指标计算完成: {symbol} {interval}")
+        return result
     
     except Exception as e:
         logger.error(f"计算技术指标失败: {e}")
