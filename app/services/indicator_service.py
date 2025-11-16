@@ -545,7 +545,7 @@ class BinanceClient:
                     
                     # 验证时间戳连续性（允许5%的容差）
                     interval_ms = {
-                        '1m': 60_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000,
+                        '1m': 60_000, '3m': 180_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000,
                         '1h': 3_600_000, '2h': 7_200_000, '4h': 14_400_000, '1d': 86_400_000
                     }.get(interval)
                     if interval_ms:
@@ -769,7 +769,7 @@ def _calculate_indicators_worker(symbol: str, interval: str, config: Dict) -> Di
 
 def get_supported_intervals() -> List[str]:
     """获取支持的时间间隔列表"""
-    return ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"]
+    return ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"]
 
 
 def shutdown_thread_pool():
