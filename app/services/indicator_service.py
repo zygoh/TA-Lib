@@ -309,6 +309,19 @@ def to_list_preserve_precision(series: pd.Series) -> List:
     """转换为列表，保持原始精度"""
     return [None if pd.isna(x) else float(x) for x in series]
 
+def clean_nan_values(data):
+    """清理数据中的NaN值，转换为None"""
+    if isinstance(data, list):
+        return [clean_nan_values(x) for x in data]
+    elif isinstance(data, dict):
+        return {k: clean_nan_values(v) for k, v in data.items()}
+    else:
+        try:
+            # pandas/numpy 的 NaN 处理
+            return None if pd.isna(data) else data
+        except Exception:
+            return data
+
 def validate_ohlcv_data(df: pd.DataFrame) -> bool:
     try:
         # 检查价格逻辑
@@ -625,66 +638,90 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
         
         # 计算技术指标
         indicators_data = calculate_all_indicators(df, config)
-        
-        # 构建最新数据点（而不是完整时间序列）
-        latest_index = -1  # 最后一个数据点
-        
-        result = {
-            'timestamp': int(df['timestamp_ms'].iloc[latest_index]),
-            'close': float(df['close'].iloc[latest_index]),
-            'rsi': indicators_data['rsi'][latest_index],
-            'sma': indicators_data['sma'][latest_index],
-            'ema': indicators_data['ema'][latest_index],
-            'bb_upper': indicators_data['bollinger_bands']['upper'][latest_index],
-            'bb_basis': indicators_data['bollinger_bands']['middle'][latest_index],
-            'bb_lower': indicators_data['bollinger_bands']['lower'][latest_index],
-            'macd': indicators_data['macd']['macd'][latest_index],
-            'macd_signal': indicators_data['macd']['signal'][latest_index],
-            'macd_histogram': indicators_data['macd']['histogram'][latest_index],
-            'stoch_rsi_k': indicators_data['stochastic_rsi']['k_percent'][latest_index],
-            'stoch_rsi_d': indicators_data['stochastic_rsi']['d_percent'][latest_index],
-            'adx': indicators_data['adx'][latest_index],
-            'atr': indicators_data.get('atr', [None] * len(df))[latest_index],
-            'obv': indicators_data.get('obv', [None] * len(df))[latest_index],
-            'vwap': indicators_data.get('vwap', [None] * len(df))[latest_index]
-        }
-        
-        # 添加斐波那契回撤位（如果存在）
+
+        # 构建完整时间序列数据
+        result_df = pd.DataFrame({
+            'timestamp': df['timestamp_ms'],
+            'close': df['close'],
+            'rsi': indicators_data['rsi'],
+            'sma': indicators_data['sma'],
+            'ema': indicators_data['ema'],
+            'bb_upper': indicators_data['bollinger_bands']['upper'],
+            'bb_basis': indicators_data['bollinger_bands']['middle'],
+            'bb_lower': indicators_data['bollinger_bands']['lower'],
+            'macd': indicators_data['macd']['macd'],
+            'macd_signal': indicators_data['macd']['signal'],
+            'macd_histogram': indicators_data['macd']['histogram'],
+            'stoch_rsi_k': indicators_data['stochastic_rsi']['k_percent'],
+            'stoch_rsi_d': indicators_data['stochastic_rsi']['d_percent'],
+            'adx': indicators_data['adx'],
+            'atr': indicators_data.get('atr', [None] * len(df)),
+            'obv': indicators_data.get('obv', [None] * len(df)),
+            'vwap': indicators_data.get('vwap', [None] * len(df))
+        })
+
+        # 斐波那契回撤位：作为列与 rsi/sma 等平级（常量列）
         if 'fibonacci_retracement' in indicators_data:
             for level, value in indicators_data['fibonacci_retracement'].items():
-                result[level] = value
-        
-        # 添加蜡烛形态（如果启用）
-        if 'patterns' in indicators_data:
-            # 提取最新K线的所有形态
-            latest_patterns = []
-            for pattern_name, pattern_values in indicators_data['patterns'].items():
-                # 获取最新值并转换为整数
-                pattern_value = int(pattern_values.iloc[latest_index])
-                
-                if pattern_value != 0:
-                    latest_patterns.append({
-                        'name': pattern_name,
-                        'value': pattern_value
-                    })
-            result['patterns'] = latest_patterns
-        
-        # 添加海龟法则（如果启用）
+                result_df[level] = value
+
+        # 蜡烛形态：为每个时间点给出活跃形态列表，作为一列与 rsi/sma 等平级
+        if 'patterns' in indicators_data and isinstance(indicators_data['patterns'], dict):
+            # 构建每个时间点的形态列表
+            pattern_series_dict = {
+                name: pd.Series(series, index=df.index) for name, series in indicators_data['patterns'].items()
+            }
+            pattern_names = list(pattern_series_dict.keys())
+            def collect_patterns_at_idx(idx):
+                acts = []
+                for name in pattern_names:
+                    try:
+                        val = int(pattern_series_dict[name].iloc[idx])
+                        if val != 0:
+                            acts.append({'name': name, 'value': val})
+                    except Exception:
+                        pass
+                return acts
+            # 通过行索引位置构造列表
+            result_df = result_df.reset_index(drop=True)
+            result_df['patterns'] = [collect_patterns_at_idx(i) for i in range(len(result_df))]
+
+        # 海龟法则：每条记录下用 turtle 包裹
         if 'turtle' in indicators_data:
             turtle_data = indicators_data['turtle']
             if turtle_data is not None and isinstance(turtle_data, dict):
-                result['turtle'] = {
-                    'upper_channel': turtle_data['upper_channel'][latest_index],
-                    'lower_channel': turtle_data['lower_channel'][latest_index],
-                    'exit_upper': turtle_data['exit_upper'][latest_index],
-                    'exit_lower': turtle_data['exit_lower'][latest_index],
-                    'atr': turtle_data['atr'][latest_index],
-                    'entry_signal': turtle_data['entry_signal'][latest_index],
-                    'exit_signal': turtle_data['exit_signal'][latest_index]
-                }
-        
-        logger.info(f"技术指标计算完成: {symbol} {interval}")
-        return result
+                # 与记录数量对齐
+                result_df = result_df.reset_index(drop=True)
+                t_upper = turtle_data['upper_channel']
+                t_lower = turtle_data['lower_channel']
+                t_exit_upper = turtle_data['exit_upper']
+                t_exit_lower = turtle_data['exit_lower']
+                t_atr = turtle_data['atr']
+                t_entry = turtle_data['entry_signal']
+                t_exit = turtle_data['exit_signal']
+                turtle_list = []
+                for i in range(len(result_df)):
+                    turtle_list.append({
+                        'upper_channel': t_upper[i] if i < len(t_upper) else None,
+                        'lower_channel': t_lower[i] if i < len(t_lower) else None,
+                        'exit_upper': t_exit_upper[i] if i < len(t_exit_upper) else None,
+                        'exit_lower': t_exit_lower[i] if i < len(t_exit_lower) else None,
+                        'atr': t_atr[i] if i < len(t_atr) else None,
+                        'entry_signal': t_entry[i] if i < len(t_entry) else None,
+                        'exit_signal': t_exit[i] if i < len(t_exit) else None
+                    })
+                result_df['turtle'] = turtle_list
+
+        # 关键指标非空过滤（避免过多空值记录）
+        key_indicators = ['rsi', 'sma', 'ema', 'macd', 'macd_signal', 'adx']
+        result_df = result_df.dropna(subset=key_indicators)
+
+        # 转字典并清理 NaN
+        records = result_df.to_dict('records')
+        records = clean_nan_values(records)
+
+        logger.info(f"技术指标计算完成: {symbol} {interval}, 数据点数: {len(records)}")
+        return {'indicators': records}
     
     except Exception as e:
         logger.error(f"计算技术指标失败: {e}")
