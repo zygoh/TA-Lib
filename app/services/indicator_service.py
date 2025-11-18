@@ -643,6 +643,7 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
         result_df = pd.DataFrame({
             'timestamp': df['timestamp_ms'],
             'close': df['close'],
+            'volume': df['volume'],
             'rsi': indicators_data['rsi'],
             'sma': indicators_data['sma'],
             'ema': indicators_data['ema'],
