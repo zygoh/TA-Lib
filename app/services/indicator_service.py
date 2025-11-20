@@ -677,10 +677,7 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
             'volume_ma': indicators_data.get('volume_ma', [None] * len(df))
         })
 
-        # 斐波那契回撤位：作为列与 rsi/sma 等平级（常量列）
-        if 'fibonacci_retracement' in indicators_data:
-            for level, value in indicators_data['fibonacci_retracement'].items():
-                result_df[level] = value
+        # 斐波那契回撤位将在最后单独提取
 
         # 蜡烛形态：为每个时间点给出活跃形态列表，作为一列与 rsi/sma 等平级
         if 'patterns' in indicators_data and isinstance(indicators_data['patterns'], dict):
@@ -737,8 +734,15 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
         records = result_df.to_dict('records')
         records = clean_nan_values(records)
 
+        # 构建返回结果
+        result = {'indicators': records}
+        
+        # 斐波那契回撤位：提取到与 indicators 同级别，只返回最新值
+        if 'fibonacci_retracement' in indicators_data:
+            result['fibonacci'] = indicators_data['fibonacci_retracement']
+
         logger.info(f"技术指标计算完成: {symbol} {interval}, 数据点数: {len(records)}")
-        return {'indicators': records}
+        return result
     
     except Exception as e:
         logger.error(f"计算技术指标失败: {e}")
