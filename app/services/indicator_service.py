@@ -131,6 +131,15 @@ class TechnicalIndicators:
         return pd.Series(talib.OBV(close.values, volume.values), index=close.index)
     
     @staticmethod
+    def volume_ma(volume: pd.Series, period: int = 20) -> pd.Series:
+        """成交量移动平均线 (Volume MA)"""
+        volume = ensure_float64(volume)
+        if volume.isna().any():
+            logger.warning("Volume MA 计算：volume 包含 NaN，使用前向填充")
+            volume = volume.ffill().fillna(0)
+        return pd.Series(talib.SMA(volume.values, timeperiod=period), index=volume.index)
+    
+    @staticmethod
     def vwap(df: pd.DataFrame, period: str = None) -> pd.Series:
         """成交量加权平均价 (VWAP)，支持按日重置"""
         if df['volume'].isna().any():
@@ -433,6 +442,10 @@ def calculate_all_indicators(df: pd.DataFrame, config: Dict[str, Any]) -> Dict[s
     if 'vwap' in config:
         results['vwap'] = to_list_preserve_precision(indicators.vwap(df, config['vwap'].get('period')))
     
+    # Volume MA
+    if 'volume_ma' in config:
+        results['volume_ma'] = to_list_preserve_precision(indicators.volume_ma(df['volume'], config['volume_ma']))
+    
     # Fibonacci Retracement
     if 'fib' in config:
         results['fibonacci_retracement'] = indicators.fibonacci_retracement(df, config['fib']['period'])
@@ -593,6 +606,8 @@ def validate_config(config: Dict) -> None:
         raise ValueError("obv 必须是布尔类型")
     if 'vwap' in config and not isinstance(config['vwap'], dict):
         raise ValueError("vwap 必须是字典类型")
+    if 'volume_ma' in config and not isinstance(config['volume_ma'], int):
+        raise ValueError("volume_ma 必须是整数类型")
     if 'fib' in config and not isinstance(config['fib'], dict):
         raise ValueError("fib 必须是字典类型")
     
@@ -658,7 +673,8 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
             'adx': indicators_data['adx'],
             'atr': indicators_data.get('atr', [None] * len(df)),
             'obv': indicators_data.get('obv', [None] * len(df)),
-            'vwap': indicators_data.get('vwap', [None] * len(df))
+            'vwap': indicators_data.get('vwap', [None] * len(df)),
+            'volume_ma': indicators_data.get('volume_ma', [None] * len(df))
         })
 
         # 斐波那契回撤位：作为列与 rsi/sma 等平级（常量列）
