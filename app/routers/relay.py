@@ -147,9 +147,15 @@ async def _curl_request_async(
     url: str,
     headers: dict,
     data: Optional[bytes] = None,
-    timeout: int = 30
+    timeout: int = 30,
+    impersonate: Optional[str] = None
 ) -> tuple[int, bytes, dict]:
-    """使用 curl_cffi 异步版本发送请求"""
+    """使用 curl_cffi 异步版本发送请求
+    
+    Args:
+        impersonate: 浏览器指纹伪装，None 表示使用标准 TLS
+                    'chrome120' 等表示伪装成对应浏览器
+    """
     try:
         async with AsyncSession() as session:
             resp = await session.request(
@@ -159,7 +165,7 @@ async def _curl_request_async(
                 data=data,
                 timeout=timeout,
                 allow_redirects=True,
-                impersonate=IMPERSONATE_BROWSER
+                impersonate=impersonate
             )
             
             content = resp.content
@@ -229,13 +235,19 @@ async def http_relay(request: Request, path: str, exchange: str = 'binance'):
         if exchange == 'okx' and 'Accept' not in headers:
             headers['Accept'] = 'application/json'
         
+        # 决定是否使用浏览器指纹伪装
+        # Binance: 开启 (chrome120)，用于绕过 Cloudflare
+        # OKX: 关闭 (None)，使用标准 TLS，避免 CloudFront 403
+        impersonate_browser = IMPERSONATE_BROWSER if exchange == 'binance' else None
+        
         body = await request.body()
         
         status_code, content, response_headers = await _curl_request_async(
             method=request.method,
             url=target_url,
             headers=headers,
-            data=body if body else None
+            data=body if body else None,
+            impersonate=impersonate_browser
         )
         
         print(f"[HTTP-{exchange.upper()}] Response {status_code}, Content-Length: {len(content)}")
