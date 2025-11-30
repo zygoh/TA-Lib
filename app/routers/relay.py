@@ -176,6 +176,8 @@ async def _curl_request_async(
 async def http_relay(request: Request, path: str, exchange: str = 'binance'):
     """HTTP 代理转发端点"""
     config = EXCHANGE_CONFIG.get(exchange, EXCHANGE_CONFIG['binance'])
+    # 确保路径格式正确（移除开头的斜杠，避免双斜杠）
+    path = path.lstrip('/')
     target_url = f"{config['http_base']}/{path}"
     if request.url.query:
         target_url += f"?{request.url.query}"
@@ -183,8 +185,15 @@ async def http_relay(request: Request, path: str, exchange: str = 'binance'):
     print(f"[HTTP-{exchange.upper()}] {request.method} {target_url}")
     
     try:
-        # 所有交易所都使用浏览器请求头以通过 CloudFront/WAF 检测
-        headers = BROWSER_HEADERS.copy()
+        # OKX 使用程序化 API 请求头，Binance 使用浏览器请求头
+        if exchange == 'okx':
+            # OKX: 不使用浏览器头部，使用程序化的 API 客户端头部
+            headers = {
+                'Accept': 'application/json',
+            }
+        else:
+            # Binance: 使用浏览器请求头（保持向后兼容）
+            headers = BROWSER_HEADERS.copy()
         
         # OKX 需要特定的请求头
         okx_specific_headers = ['ok-access-key', 'ok-access-sign', 'ok-access-timestamp', 
@@ -194,11 +203,12 @@ async def http_relay(request: Request, path: str, exchange: str = 'binance'):
         
         for k, v in request.headers.items():
             k_lower = k.lower()
-            if k_lower not in SKIP_HEADERS:
-                if k_lower in ['content-type', 'authorization']:
+            # 允许透传 User-Agent（特别是对于 OKX）
+            if k_lower not in SKIP_HEADERS or k_lower == 'user-agent':
+                if k_lower in ['content-type', 'authorization', 'user-agent']:
                     headers[k] = v
                 elif k_lower == 'accept':
-                    # 如果客户端指定了 Accept，优先使用客户端的（可能是 application/json）
+                    # 如果客户端指定了 Accept，优先使用客户端的
                     if v:
                         headers['Accept'] = v
                 elif exchange == 'okx' and k_lower in [h.lower() for h in okx_specific_headers]:
@@ -206,15 +216,18 @@ async def http_relay(request: Request, path: str, exchange: str = 'binance'):
                 elif exchange == 'binance' and k_lower in [h.lower() for h in binance_specific_headers]:
                     headers[k] = v
         
-        # 添加 Referer 和 Origin 头，通过 CloudFront 检测
-        headers['Referer'] = config['referer']
-        headers['Origin'] = config['origin']
+        # 只有 Binance 需要浏览器相关的头（Referer 和 Origin）
+        if exchange == 'binance':
+            headers['Referer'] = config['referer']
+            headers['Origin'] = config['origin']
         
-        # OKX API 通常接受 JSON，如果没有客户端指定则使用兼容的 Accept 头
-        if exchange == 'okx':
-            # 如果客户端没有指定 Accept，使用支持 JSON 的浏览器 Accept 头
-            if 'Accept' not in headers or headers.get('Accept') == '*/*':
-                headers['Accept'] = 'application/json, text/plain, */*'
+        # OKX: 如果没有 User-Agent，使用程序化的 UA（不是浏览器 UA）
+        if exchange == 'okx' and 'User-Agent' not in headers:
+            headers['User-Agent'] = 'py-proxy/1.0'
+        
+        # OKX: 如果没有 Accept，使用 JSON
+        if exchange == 'okx' and 'Accept' not in headers:
+            headers['Accept'] = 'application/json'
         
         body = await request.body()
         
@@ -226,6 +239,8 @@ async def http_relay(request: Request, path: str, exchange: str = 'binance'):
         )
         
         print(f"[HTTP-{exchange.upper()}] Response {status_code}, Content-Length: {len(content)}")
+        if status_code != 200:
+            print(f"[HTTP-{exchange.upper()}] Response content (first 500 chars): {content[:500]}")
         
         return Response(
             content=content,
