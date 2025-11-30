@@ -2,8 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 WebSocket 和 HTTP 代理转发（使用 curl_cffi 模拟真实浏览器 TLS 指纹）
-- WebSocket: ws://host:port/ws/relay/{path:path}
-- HTTP: http://host:port/http/relay/{path:path}
+- Binance WebSocket: ws://host:port/ws/relay/{path:path}
+- Binance HTTP: http://host:port/http/relay/{path:path}
+- OKX WebSocket: ws://host:port/ws/relay/okx/{path:path}
+- OKX HTTP: http://host:port/http/relay/okx/{path:path}
 """
 
 from fastapi import APIRouter, WebSocket, Request
@@ -16,9 +18,27 @@ from typing import Optional
 
 router = APIRouter()
 
-# 远端地址配置
-WS_REMOTE_BASE = "wss://ws.okx.com:8443"
-HTTP_REMOTE_BASE = "https://www.okx.com"
+# 交易所配置
+EXCHANGE_CONFIG = {
+    'binance': {
+        'ws_base': 'wss://fstream.binance.com',
+        'http_base': 'https://fapi.binance.com',
+        'origin': 'https://www.binance.com',
+        'host_ws': 'fstream.binance.com',
+        'referer': 'https://www.binance.com/',
+    },
+    'okx': {
+        'ws_base': 'wss://ws.okx.com:8443',
+        'http_base': 'https://www.okx.com',
+        'origin': 'https://www.okx.com',
+        'host_ws': 'ws.okx.com',
+        'referer': 'https://www.okx.com/',
+    }
+}
+
+# 默认使用 Binance 配置（向后兼容）
+WS_REMOTE_BASE = EXCHANGE_CONFIG['binance']['ws_base']
+HTTP_REMOTE_BASE = EXCHANGE_CONFIG['binance']['http_base']
 
 # 模拟浏览器指纹（推荐使用较新的 Chrome 版本）
 IMPERSONATE_BROWSER = "chrome120"  # 可选: chrome110, chrome116, chrome119, edge110, safari15_3 等
@@ -68,22 +88,23 @@ async def relay(client_ws: WebSocket, remote_ws):
     )
 
 
-async def websocket_proxy(websocket: WebSocket, path: str):
+async def websocket_proxy(websocket: WebSocket, path: str, exchange: str = 'binance'):
     """WebSocket 代理核心逻辑（支持自动重连）"""
-    target_url = f"{WS_REMOTE_BASE}/{path}"
+    config = EXCHANGE_CONFIG.get(exchange, EXCHANGE_CONFIG['binance'])
+    target_url = f"{config['ws_base']}/{path}"
     if websocket.query_params:
         from urllib.parse import urlencode
         query = urlencode(websocket.query_params)
         target_url += f"?{query}"
     
-    print(f"[WS] Client connecting to: {target_url}")
+    print(f"[WS-{exchange.upper()}] Client connecting to: {target_url}")
     
     accepted = False
     try:
         await websocket.accept()
         accepted = True
     except Exception as e:
-        print(f"[WS] Failed to accept connection: {e}")
+        print(f"[WS-{exchange.upper()}] Failed to accept connection: {e}")
         return
     
     try:
@@ -93,8 +114,8 @@ async def websocket_proxy(websocket: WebSocket, path: str):
         
         headers = {
             'User-Agent': BROWSER_HEADERS['User-Agent'],
-            'Origin': HTTP_REMOTE_BASE,
-            'Host': 'fstream.binance.com',
+            'Origin': config['origin'],
+            'Host': config['host_ws'],
             'Accept-Encoding': 'gzip, deflate, br',
         }
         
@@ -105,12 +126,12 @@ async def websocket_proxy(websocket: WebSocket, path: str):
             ping_interval=20,
             ping_timeout=10
         ) as remote_ws:
-            print(f"[WS] Connected to remote")
+            print(f"[WS-{exchange.upper()}] Connected to remote")
             await relay(websocket, remote_ws)
     except websockets.exceptions.WebSocketException as e:
-        print(f"[WS] WebSocket error: {e}")
+        print(f"[WS-{exchange.upper()}] WebSocket error: {e}")
     except Exception as e:
-        print(f"[WS] Unexpected error: {e}")
+        print(f"[WS-{exchange.upper()}] Unexpected error: {e}")
     finally:
         # 确保连接正常关闭，不影响后续重连
         if accepted:
@@ -119,7 +140,7 @@ async def websocket_proxy(websocket: WebSocket, path: str):
             except Exception:
                 # 连接可能已经关闭，忽略异常
                 pass
-        print("[WS] Disconnected (ready for reconnection)")
+        print(f"[WS-{exchange.upper()}] Disconnected (ready for reconnection)")
 
 async def _curl_request_async(
     method: str,
@@ -152,26 +173,37 @@ async def _curl_request_async(
         raise
 
 
-async def http_relay(request: Request, path: str):
+async def http_relay(request: Request, path: str, exchange: str = 'binance'):
     """HTTP 代理转发端点"""
-    target_url = f"{HTTP_REMOTE_BASE}/{path}"
+    config = EXCHANGE_CONFIG.get(exchange, EXCHANGE_CONFIG['binance'])
+    target_url = f"{config['http_base']}/{path}"
     if request.url.query:
         target_url += f"?{request.url.query}"
     
-    print(f"[HTTP] {request.method} {target_url}")
+    print(f"[HTTP-{exchange.upper()}] {request.method} {target_url}")
     
     try:
         headers = BROWSER_HEADERS.copy()
         
+        # OKX 需要特定的请求头
+        okx_specific_headers = ['ok-access-key', 'ok-access-sign', 'ok-access-timestamp', 
+                               'ok-access-passphrase', 'x-simulated-trading']
+        # Binance 特定的请求头
+        binance_specific_headers = ['x-mbx-apikey']
+        
         for k, v in request.headers.items():
             k_lower = k.lower()
             if k_lower not in SKIP_HEADERS:
-                if k_lower in ['content-type', 'authorization', 'x-mbx-apikey', 'accept']:
+                if k_lower in ['content-type', 'authorization', 'accept']:
+                    headers[k] = v
+                elif exchange == 'okx' and k_lower in [h.lower() for h in okx_specific_headers]:
+                    headers[k] = v
+                elif exchange == 'binance' and k_lower in [h.lower() for h in binance_specific_headers]:
                     headers[k] = v
         
         # 添加 Referer 和 Origin 头，增强浏览器真实性
-        headers['Referer'] = HTTP_REMOTE_BASE
-        headers['Origin'] = HTTP_REMOTE_BASE
+        headers['Referer'] = config['referer']
+        headers['Origin'] = config['origin']
         
         body = await request.body()
         
@@ -182,7 +214,7 @@ async def http_relay(request: Request, path: str):
             data=body if body else None
         )
         
-        print(f"[HTTP] Response {status_code}, Content-Length: {len(content)}")
+        print(f"[HTTP-{exchange.upper()}] Response {status_code}, Content-Length: {len(content)}")
         
         return Response(
             content=content,
@@ -191,7 +223,7 @@ async def http_relay(request: Request, path: str):
         )
     
     except Exception as e:
-        print(f"[HTTP] Error: {e}")
+        print(f"[HTTP-{exchange.upper()}] Error: {e}")
         return Response(
             content=f"Relay error: {str(e)}",
             status_code=502,
@@ -208,3 +240,15 @@ async def websocket_relay_endpoint(websocket: WebSocket, path: str):
 async def http_relay_endpoint(request: Request, path: str):
     """HTTP 代理转发端点"""
     return await http_relay(request, path)
+
+
+@router.websocket("/ws/relay/okx/{path:path}")
+async def websocket_okx_relay_endpoint(websocket: WebSocket, path: str):
+    """OKX WebSocket 代理端点"""
+    await websocket_proxy(websocket, path, exchange='okx')
+
+
+@router.api_route("/http/relay/okx/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+async def http_okx_relay_endpoint(request: Request, path: str):
+    """OKX HTTP 代理转发端点"""
+    return await http_relay(request, path, exchange='okx')
