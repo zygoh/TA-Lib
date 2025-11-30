@@ -183,15 +183,8 @@ async def http_relay(request: Request, path: str, exchange: str = 'binance'):
     print(f"[HTTP-{exchange.upper()}] {request.method} {target_url}")
     
     try:
-        # OKX API 使用更简洁的请求头，不需要浏览器相关的头
-        if exchange == 'okx':
-            headers = {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json',
-            }
-        else:
-            # Binance 使用浏览器请求头
-            headers = BROWSER_HEADERS.copy()
+        # 所有交易所都使用浏览器请求头以通过 CloudFront/WAF 检测
+        headers = BROWSER_HEADERS.copy()
         
         # OKX 需要特定的请求头
         okx_specific_headers = ['ok-access-key', 'ok-access-sign', 'ok-access-timestamp', 
@@ -202,17 +195,26 @@ async def http_relay(request: Request, path: str, exchange: str = 'binance'):
         for k, v in request.headers.items():
             k_lower = k.lower()
             if k_lower not in SKIP_HEADERS:
-                if k_lower in ['content-type', 'authorization', 'accept']:
+                if k_lower in ['content-type', 'authorization']:
                     headers[k] = v
+                elif k_lower == 'accept':
+                    # 如果客户端指定了 Accept，优先使用客户端的（可能是 application/json）
+                    if v:
+                        headers['Accept'] = v
                 elif exchange == 'okx' and k_lower in [h.lower() for h in okx_specific_headers]:
                     headers[k] = v
                 elif exchange == 'binance' and k_lower in [h.lower() for h in binance_specific_headers]:
                     headers[k] = v
         
-        # 只有 Binance 需要浏览器相关的头
-        if exchange == 'binance':
-            headers['Referer'] = config['referer']
-            headers['Origin'] = config['origin']
+        # 添加 Referer 和 Origin 头，通过 CloudFront 检测
+        headers['Referer'] = config['referer']
+        headers['Origin'] = config['origin']
+        
+        # OKX API 通常接受 JSON，如果没有客户端指定则使用兼容的 Accept 头
+        if exchange == 'okx':
+            # 如果客户端没有指定 Accept，使用支持 JSON 的浏览器 Accept 头
+            if 'Accept' not in headers or headers.get('Accept') == '*/*':
+                headers['Accept'] = 'application/json, text/plain, */*'
         
         body = await request.body()
         
