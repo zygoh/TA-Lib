@@ -183,7 +183,15 @@ async def http_relay(request: Request, path: str, exchange: str = 'binance'):
     print(f"[HTTP-{exchange.upper()}] {request.method} {target_url}")
     
     try:
-        headers = BROWSER_HEADERS.copy()
+        # OKX API 使用更简洁的请求头，不需要浏览器相关的头
+        if exchange == 'okx':
+            headers = {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+            }
+        else:
+            # Binance 使用浏览器请求头
+            headers = BROWSER_HEADERS.copy()
         
         # OKX 需要特定的请求头
         okx_specific_headers = ['ok-access-key', 'ok-access-sign', 'ok-access-timestamp', 
@@ -201,9 +209,10 @@ async def http_relay(request: Request, path: str, exchange: str = 'binance'):
                 elif exchange == 'binance' and k_lower in [h.lower() for h in binance_specific_headers]:
                     headers[k] = v
         
-        # 添加 Referer 和 Origin 头，增强浏览器真实性
-        headers['Referer'] = config['referer']
-        headers['Origin'] = config['origin']
+        # 只有 Binance 需要浏览器相关的头
+        if exchange == 'binance':
+            headers['Referer'] = config['referer']
+            headers['Origin'] = config['origin']
         
         body = await request.body()
         
