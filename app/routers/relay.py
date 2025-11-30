@@ -18,7 +18,7 @@ router = APIRouter()
 
 # 远端地址配置
 WS_REMOTE_BASE = "wss://fstream.binance.com"
-HTTP_REMOTE_BASE = "https://fapi.binance.com"
+HTTP_REMOTE_BASE = "wss://ws.okx.com:8443"
 
 # 模拟浏览器指纹（推荐使用较新的 Chrome 版本）
 IMPERSONATE_BROWSER = "chrome120"  # 可选: chrome110, chrome116, chrome119, edge110, safari15_3 等
