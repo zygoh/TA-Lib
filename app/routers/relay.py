@@ -17,8 +17,8 @@ from typing import Optional
 router = APIRouter()
 
 # 远端地址配置
-WS_REMOTE_BASE = "wss://fstream.binance.com"
-HTTP_REMOTE_BASE = "wss://ws.okx.com:8443"
+WS_REMOTE_BASE = "wss://ws.okx.com:8443"
+HTTP_REMOTE_BASE = "https://www.okx.com"
 
 # 模拟浏览器指纹（推荐使用较新的 Chrome 版本）
 IMPERSONATE_BROWSER = "chrome120"  # 可选: chrome110, chrome116, chrome119, edge110, safari15_3 等
@@ -93,7 +93,7 @@ async def websocket_proxy(websocket: WebSocket, path: str):
         
         headers = {
             'User-Agent': BROWSER_HEADERS['User-Agent'],
-            'Origin': 'https://www.binance.com',
+            'Origin': HTTP_REMOTE_BASE,
             'Host': 'fstream.binance.com',
             'Accept-Encoding': 'gzip, deflate, br',
         }
@@ -170,8 +170,8 @@ async def http_relay(request: Request, path: str):
                     headers[k] = v
         
         # 添加 Referer 和 Origin 头，增强浏览器真实性
-        headers['Referer'] = 'https://www.binance.com/'
-        headers['Origin'] = 'https://www.binance.com'
+        headers['Referer'] = HTTP_REMOTE_BASE
+        headers['Origin'] = HTTP_REMOTE_BASE
         
         body = await request.body()
         
