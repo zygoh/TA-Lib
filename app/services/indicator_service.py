@@ -14,6 +14,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from aiohttp.client_exceptions import ClientResponseError
 from datetime import datetime
+import time
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -552,7 +553,30 @@ class BinanceClient:
                     
                     # 保存原始时间戳（毫秒）
                     df['timestamp_ms'] = df['timestamp'].astype(int)
-                    
+
+                    if not df.empty:
+                        # 1. 获取最后一行数据
+                        last_row = df.iloc[-1]
+
+                        # 2. 获取关键时间点 (毫秒)
+                        current_time_ms = int(time.time() * 1000)
+                        last_close_time = int(last_row['close_time'])
+
+                        # 3. 转换为可读时间字符串 (方便日志查看)
+                        # 注意：这里默认是UTC时间，与币安保持一致
+                        last_close_str = pd.to_datetime(last_close_time, unit='ms').strftime('%Y-%m-%d %H:%M:%S')
+                        current_time_str = pd.to_datetime(current_time_ms, unit='ms').strftime('%Y-%m-%d %H:%M:%S')
+
+                        # 4. 判断并打印
+                        if last_close_time >= current_time_ms:
+                            logger.info(f"⚠️ 触发过滤 | 发现未完成K线，正在移除...")
+                            logger.info(f"   >>> K线预定收盘: {last_close_str}")
+                            logger.info(f"   >>> 当前系统时间: {current_time_str}")
+                            # 执行移除
+                            df = df.iloc[:-1]
+                        else:
+                            # 调试用：如果没有过滤，也可以打个日志确认一下 (如果嫌日志太乱可以注释掉下面这行)
+                            logger.debug(f"✓ K线已完成 (收盘 {last_close_str} < 当前 {current_time_str})，无需过滤")
                     # 转换时间戳为datetime用于排序
                     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                     
