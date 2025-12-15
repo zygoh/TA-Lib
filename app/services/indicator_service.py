@@ -1,20 +1,20 @@
-
 """
 币安技术指标计算服务 - 使用TA-Lib
 包含API调用和指标计算功能，支持按日重置 VWAP 和过滤 null 数据
+[优化版] 针对AI Token消耗进行了结构优化
 """
 import asyncio
+import json
+import logging
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Any, List, Union
+
 import aiohttp
 import pandas as pd
 import talib
-from typing import Dict, Any, List
-import logging
-import json
-import os
-from concurrent.futures import ThreadPoolExecutor
 from aiohttp.client_exceptions import ClientResponseError
-from datetime import datetime
-import time
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -51,27 +51,46 @@ _config = load_config()
 # 创建全局线程池
 _thread_pool = ThreadPoolExecutor(max_workers=_config["thread_pool_size"], thread_name_prefix="indicator_worker")
 
+def ensure_float64(data: pd.Series) -> pd.Series:
+    """确保数据为float64类型，TA-Lib要求"""
+    if data.dtype != 'float64':
+        return data.astype('float64')
+    return data
+
+def round_float(val: Union[float, int, None], precision: int = 8) -> Union[float, int, None]:
+    """
+    [新增优化] 智能浮点数截断
+    用于减少JSON序列化后的字符串长度，节省AI Tokens。
+    保留8位小数通常足以覆盖加密货币（甚至PEPE等）的精度需求。
+    """
+    if pd.isna(val) or val is None:
+        return None
+    try:
+        return round(float(val), precision)
+    except Exception:
+        return val
+
 class TechnicalIndicators:
     """技术指标计算类 - 使用TA-Lib库"""
-    
+
     @staticmethod
     def sma(data: pd.Series, period: int) -> pd.Series:
         """简单移动平均线"""
         data = ensure_float64(data)
         return pd.Series(talib.SMA(data.values, timeperiod=period), index=data.index)
-    
+
     @staticmethod
     def ema(data: pd.Series, period: int) -> pd.Series:
         """指数移动平均线"""
         data = ensure_float64(data)
         return pd.Series(talib.EMA(data.values, timeperiod=period), index=data.index)
-    
+
     @staticmethod
     def rsi(data: pd.Series, period: int = 14) -> pd.Series:
         """相对强弱指数"""
         data = ensure_float64(data)
         return pd.Series(talib.RSI(data.values, timeperiod=period), index=data.index)
-    
+
     @staticmethod
     def bollinger_bands(data: pd.Series, period: int = 20, std_dev: float = 2) -> Dict[str, pd.Series]:
         """布林带"""
@@ -82,7 +101,7 @@ class TechnicalIndicators:
             'middle': pd.Series(middle, index=data.index),
             'lower': pd.Series(lower, index=data.index)
         }
-    
+
     @staticmethod
     def macd(data: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> Dict[str, pd.Series]:
         """MACD指标"""
@@ -93,7 +112,7 @@ class TechnicalIndicators:
             'signal': pd.Series(signal_line, index=data.index),
             'histogram': pd.Series(histogram, index=data.index)
         }
-    
+
     @staticmethod
     def stochastic_rsi(data: pd.Series, rsi_period: int = 14, stoch_period: int = 14, k_smooth: int = 3, d_smooth: int = 3) -> Dict[str, pd.Series]:
         """随机RSI"""
@@ -103,7 +122,7 @@ class TechnicalIndicators:
             'k_percent': pd.Series(k_percent, index=data.index),
             'd_percent': pd.Series(d_percent, index=data.index)
         }
-    
+
     @staticmethod
     def adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
         """平均趋向指数"""
@@ -111,7 +130,7 @@ class TechnicalIndicators:
         low = ensure_float64(low)
         close = ensure_float64(close)
         return pd.Series(talib.ADX(high.values, low.values, close.values, timeperiod=period), index=close.index)
-    
+
     @staticmethod
     def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
         """平均真实波幅 (ATR)"""
@@ -119,7 +138,7 @@ class TechnicalIndicators:
         low = ensure_float64(low)
         close = ensure_float64(close)
         return pd.Series(talib.ATR(high.values, low.values, close.values, timeperiod=period), index=close.index)
-    
+
     @staticmethod
     def obv(close: pd.Series, volume: pd.Series) -> pd.Series:
         """成交量净额 (OBV)"""
@@ -130,7 +149,7 @@ class TechnicalIndicators:
             volume_filled = volume.ffill().fillna(0)
             return pd.Series(talib.OBV(close.values, volume_filled.values), index=close.index)
         return pd.Series(talib.OBV(close.values, volume.values), index=close.index)
-    
+
     @staticmethod
     def volume_ma(volume: pd.Series, period: int = 20) -> pd.Series:
         """成交量移动平均线 (Volume MA)"""
@@ -139,7 +158,7 @@ class TechnicalIndicators:
             logger.warning("Volume MA 计算：volume 包含 NaN，使用前向填充")
             volume = volume.ffill().fillna(0)
         return pd.Series(talib.SMA(volume.values, timeperiod=period), index=volume.index)
-    
+
     @staticmethod
     def vwap(df: pd.DataFrame, period: str = None) -> pd.Series:
         """成交量加权平均价 (VWAP)，支持按日重置"""
@@ -148,9 +167,9 @@ class TechnicalIndicators:
             volume_filled = df['volume'].ffill().fillna(0)
         else:
             volume_filled = df['volume']
-            
+
         typical_price = (df['high'] + df['low'] + df['close']) / 3
-        
+
         if period == 'day':
             # 动态按日分组，不依赖硬编码的K线数量
             df_copy = df.copy()
@@ -159,14 +178,14 @@ class TechnicalIndicators:
                 df_copy['date'] = df_copy['timestamp'].dt.date
             else:
                 df_copy['date'] = pd.to_datetime(df_copy['timestamp'], unit='ms').dt.date
-            
+
             def calc_vwap(x):
                 # x 是每个分组的 DataFrame，但我们只需要索引
                 # 通过索引访问外部的 volume_filled 和 typical_price
                 vol = volume_filled.loc[x.index]
                 tp = typical_price.loc[x.index]
                 return (vol * tp).cumsum() / vol.cumsum()
-            
+
             # 使用除了 'date' 之外的列进行 groupby，避免分组列被包含在 apply 中
             vwap = df_copy.drop(columns=['date']).groupby(df_copy['date'], group_keys=False).apply(calc_vwap)
             return vwap
@@ -174,7 +193,7 @@ class TechnicalIndicators:
             # 默认累积 VWAP
             vwap = (typical_price * volume_filled).cumsum() / volume_filled.cumsum()
             return vwap
-    
+
     @staticmethod
     def fibonacci_retracement(df: pd.DataFrame, period: int = 100) -> Dict[str, float]:
         """斐波那契回撤位 (基于最近 period 根 K 线的 swing high/low)"""
@@ -186,19 +205,14 @@ class TechnicalIndicators:
             return {f'fib_{int(r*1000):04d}': None for r in [0.236, 0.382, 0.5, 0.618, 0.786]}
         diff = swing_high - swing_low
         ratios = [0.236, 0.382, 0.5, 0.618, 0.786]
-        levels = {f'fib_{int(r*1000):04d}': float(swing_high - diff * r) for r in ratios}
+        # 优化：保留小数点后8位，避免JSON过长
+        levels = {f'fib_{int(r*1000):04d}': round_float(float(swing_high - diff * r)) for r in ratios}
         return levels
-    
+
     @staticmethod
     def candlestick_patterns(df: pd.DataFrame) -> Dict[str, pd.Series]:
         """
         识别蜡烛图形态
-        
-        Args:
-            df: 包含 OHLCV 数据的 DataFrame
-            
-        Returns:
-            dict: 每个形态的识别结果 Series (100=看涨, -100=看跌, 0=无)
         """
         try:
             # 确保数据类型为 float64（TA-Lib 要求）
@@ -206,9 +220,9 @@ class TechnicalIndicators:
             high_data = df['high'].astype('float64')
             low_data = df['low'].astype('float64')
             close_data = df['close'].astype('float64')
-            
+
             patterns = {}
-            
+
             # 定义所有支持的蜡烛形态函数
             pattern_functions = [
                 'CDL2CROWS', 'CDL3BLACKCROWS', 'CDL3INSIDE', 'CDL3LINESTRIKE',
@@ -228,7 +242,7 @@ class TechnicalIndicators:
                 'CDLTHRUSTING', 'CDLTRISTAR', 'CDLUNIQUE3RIVER', 'CDLUPSIDEGAP2CROWS',
                 'CDLXSIDEGAP3METHODS'
             ]
-            
+
             # 调用每个形态识别函数
             for pattern_name in pattern_functions:
                 try:
@@ -238,61 +252,43 @@ class TechnicalIndicators:
                 except Exception as e:
                     logger.warning(f"蜡烛形态 {pattern_name} 计算失败: {e}")
                     patterns[pattern_name] = pd.Series(0, index=df.index)
-            
+
             logger.info(f"成功识别 {len(patterns)} 种蜡烛形态")
             return patterns
-            
+
         except Exception as e:
             logger.error(f"蜡烛形态识别失败: {e}")
             raise
-    
+
     @staticmethod
     def turtle_trading(df: pd.DataFrame, entry_period: int, exit_period: int, atr_period: int) -> Dict[str, pd.Series]:
         """
         计算海龟交易法则指标
-        
-        Args:
-            df: 包含 OHLCV 数据的 DataFrame
-            entry_period: 入场周期（唐奇安通道周期）
-            exit_period: 出场周期
-            atr_period: ATR 计算周期
-            
-        Returns:
-            dict: 包含通道值、信号和 ATR 的字典
-            {
-                'upper_channel': pd.Series,  # 入场上轨
-                'lower_channel': pd.Series,  # 入场下轨
-                'exit_upper': pd.Series,     # 出场上轨
-                'exit_lower': pd.Series,     # 出场下轨
-                'atr': pd.Series,            # ATR 值
-                'entry_signal': pd.Series,   # 入场信号 (1=多头, -1=空头, 0=无)
-                'exit_signal': pd.Series     # 出场信号 (1=空头平仓, -1=多头平仓, 0=无)
-            }
         """
         try:
             # 计算唐奇安通道（入场）
             upper_channel = df['high'].rolling(window=entry_period).max()
             lower_channel = df['low'].rolling(window=entry_period).min()
-            
+
             # 计算唐奇安通道（出场）
             exit_upper = df['high'].rolling(window=exit_period).max()
             exit_lower = df['low'].rolling(window=exit_period).min()
-            
+
             # 计算 ATR
             atr = TechnicalIndicators.atr(df['high'], df['low'], df['close'], atr_period)
-            
+
             # 计算入场信号
             entry_signal = pd.Series(0, index=df.index)
             entry_signal[df['close'] > upper_channel.shift(1)] = 1   # 多头入场
             entry_signal[df['close'] < lower_channel.shift(1)] = -1  # 空头入场
-            
+
             # 计算出场信号
             exit_signal = pd.Series(0, index=df.index)
             exit_signal[df['close'] < exit_lower.shift(1)] = -1  # 多头平仓
             exit_signal[df['close'] > exit_upper.shift(1)] = 1   # 空头平仓
-            
+
             logger.info(f"海龟交易法则计算完成: entry_period={entry_period}, exit_period={exit_period}, atr_period={atr_period}")
-            
+
             return {
                 'upper_channel': upper_channel,
                 'lower_channel': lower_channel,
@@ -302,35 +298,20 @@ class TechnicalIndicators:
                 'entry_signal': entry_signal,
                 'exit_signal': exit_signal
             }
-            
+
         except Exception as e:
             logger.error(f"海龟交易法则计算失败: {e}")
             raise
-    
-
-def ensure_float64(data: pd.Series) -> pd.Series:
-    """确保数据为float64类型，TA-Lib要求"""
-    if data.dtype != 'float64':
-        logger.debug(f"转换数据类型从 {data.dtype} 到 float64")
-        return data.astype('float64')
-    return data
-
-def to_list_preserve_precision(series: pd.Series) -> List:
-    """转换为列表，保持原始精度"""
-    return [None if pd.isna(x) else float(x) for x in series]
 
 def clean_nan_values(data):
-    """清理数据中的NaN值，转换为None"""
+    """清理数据中的NaN值"""
     if isinstance(data, list):
         return [clean_nan_values(x) for x in data]
     elif isinstance(data, dict):
         return {k: clean_nan_values(v) for k, v in data.items()}
     else:
-        try:
-            # pandas/numpy 的 NaN 处理
-            return None if pd.isna(data) else data
-        except Exception:
-            return data
+        # 使用智能截断优化
+        return round_float(data) if isinstance(data, (float, int)) else data
 
 def validate_ohlcv_data(df: pd.DataFrame) -> bool:
     try:
@@ -344,17 +325,17 @@ def validate_ohlcv_data(df: pd.DataFrame) -> bool:
         if not ((df['low'] <= df['open']) & (df['low'] <= df['close'])).all():
             logger.error("数据验证失败：low > open 或 low > close")
             return False
-        
+
         # 检查成交量
         if (df['volume'] < 0).any():
             logger.error("数据验证失败：volume < 0")
             return False
-        
+
         # 检查价格变化幅度（防止异常数据）
         price_changes = df['close'].pct_change().abs()
         if (price_changes > 0.5).any():  # 单根K线涨跌幅超过50%
             logger.warning("检测到异常价格变化，可能存在数据问题")
-        
+
         return True
     except Exception as e:
         logger.error(f"数据验证失败: {e}")
@@ -363,103 +344,77 @@ def validate_ohlcv_data(df: pd.DataFrame) -> bool:
 def calculate_all_indicators(df: pd.DataFrame, config: Dict[str, Any]) -> Dict[str, Any]:
     """
     计算所有技术指标
-    
-    Args:
-        df: 包含OHLCV数据的DataFrame
-        config: 技术指标配置参数
-        
-    Returns:
-        dict: 包含所有技术指标的字典
     """
     indicators = TechnicalIndicators()
-    
+
     # 验证输入数据
     required_columns = ['open', 'high', 'low', 'close', 'volume']
     if df[required_columns].isna().any().any():
         logger.warning(f"K线数据包含NaN值: {df[required_columns].isna().sum().to_dict()}")
         raise ValueError("K线数据包含NaN值")
-    
+
     # 确保数据类型为float64（TA-Lib要求）
     for col in required_columns:
         df[col] = ensure_float64(df[col])
         logger.debug(f"列 {col} 数据类型: {df[col].dtype}")
-    
+
     # 验证OHLCV数据合理性
     if not validate_ohlcv_data(df):
         raise ValueError("OHLCV数据验证失败")
-    
+
     results = {}
-    
-    # RSI
-    results['rsi'] = to_list_preserve_precision(indicators.rsi(df['close'], config['rsi']))
-    
-    # SMA
-    results['sma'] = to_list_preserve_precision(indicators.sma(df['close'], config['sma']))
-    
-    # EMA
-    results['ema'] = to_list_preserve_precision(indicators.ema(df['close'], config['ema']))
-    
+
+    # 基础指标计算 - 直接保存Series对象，在最终输出时统一处理精度和格式
+    results['rsi'] = indicators.rsi(df['close'], config['rsi'])
+    results['sma'] = indicators.sma(df['close'], config['sma'])
+    results['ema'] = indicators.ema(df['close'], config['ema'])
+
     # 布林带
-    bb = indicators.bollinger_bands(df['close'], config['bb'][0], config['bb'][1])
-    results['bollinger_bands'] = {
-        'upper': to_list_preserve_precision(bb['upper']),
-        'middle': to_list_preserve_precision(bb['middle']),
-        'lower': to_list_preserve_precision(bb['lower'])
-    }
-    
+    results['bollinger_bands'] = indicators.bollinger_bands(df['close'], config['bb'][0], config['bb'][1])
+
     # MACD
-    macd = indicators.macd(df['close'], config['macd'][0], config['macd'][1], config['macd'][2])
-    results['macd'] = {
-        'macd': to_list_preserve_precision(macd['macd']),
-        'signal': to_list_preserve_precision(macd['signal']),
-        'histogram': to_list_preserve_precision(macd['histogram'])
-    }
-    
+    results['macd'] = indicators.macd(df['close'], config['macd'][0], config['macd'][1], config['macd'][2])
+
     # 随机RSI
-    stoch_rsi = indicators.stochastic_rsi(
-        df['close'], 
+    results['stochastic_rsi'] = indicators.stochastic_rsi(
+        df['close'],
         rsi_period=config['rsi'],
         stoch_period=config['stoch_rsi']['period'],
         k_smooth=config['stoch_rsi']['kSmooth'],
         d_smooth=config['stoch_rsi']['dSmooth']
     )
-    results['stochastic_rsi'] = {
-        'k_percent': to_list_preserve_precision(stoch_rsi['k_percent']),
-        'd_percent': to_list_preserve_precision(stoch_rsi['d_percent'])
-    }
-    
+
     # ADX
-    results['adx'] = to_list_preserve_precision(indicators.adx(df['high'], df['low'], df['close'], config['adx']))
-    
+    results['adx'] = indicators.adx(df['high'], df['low'], df['close'], config['adx'])
+
     # ATR
     if 'atr' in config:
-        results['atr'] = to_list_preserve_precision(indicators.atr(df['high'], df['low'], df['close'], config['atr']['period']))
-    
+        results['atr'] = indicators.atr(df['high'], df['low'], df['close'], config['atr']['period'])
+
     # OBV
     if 'obv' in config:
-        results['obv'] = to_list_preserve_precision(indicators.obv(df['close'], df['volume']))
-    
+        results['obv'] = indicators.obv(df['close'], df['volume'])
+
     # VWAP
     if 'vwap' in config:
-        results['vwap'] = to_list_preserve_precision(indicators.vwap(df, config['vwap'].get('period')))
-    
+        results['vwap'] = indicators.vwap(df, config['vwap'].get('period'))
+
     # Volume MA
     if 'volume_ma' in config:
-        results['volume_ma'] = to_list_preserve_precision(indicators.volume_ma(df['volume'], config['volume_ma']))
-    
+        results['volume_ma'] = indicators.volume_ma(df['volume'], config['volume_ma'])
+
     # Fibonacci Retracement
     if 'fib' in config:
         results['fibonacci_retracement'] = indicators.fibonacci_retracement(df, config['fib']['period'])
-    
+
     # 蜡烛形态识别
     if config.get('patterns'):
         try:
-            patterns_result = indicators.candlestick_patterns(df)
-            results['patterns'] = patterns_result
+            results['patterns'] = indicators.candlestick_patterns(df)
         except Exception as e:
             logger.error(f"蜡烛形态识别失败: {e}")
             results['patterns'] = {}
-    
+
     # 海龟交易法则
     if 'turtle' in config:
         turtle_config = config['turtle']
@@ -469,40 +424,31 @@ def calculate_all_indicators(df: pd.DataFrame, config: Dict[str, Any]) -> Dict[s
             turtle_config['exitPeriod'],
             turtle_config['atrPeriod']
         )
-        
+
         if len(df) <= min_required:
             logger.warning(f"海龟法则数据不足: 至少需要 {min_required + 1} 根K线，实际 {len(df)} 根")
             results['turtle'] = None
         else:
             try:
-                turtle_result = indicators.turtle_trading(
+                results['turtle'] = indicators.turtle_trading(
                     df,
                     turtle_config['entryPeriod'],
                     turtle_config['exitPeriod'],
                     turtle_config['atrPeriod']
                 )
-                results['turtle'] = {
-                    'upper_channel': to_list_preserve_precision(turtle_result['upper_channel']),
-                    'lower_channel': to_list_preserve_precision(turtle_result['lower_channel']),
-                    'exit_upper': to_list_preserve_precision(turtle_result['exit_upper']),
-                    'exit_lower': to_list_preserve_precision(turtle_result['exit_lower']),
-                    'atr': to_list_preserve_precision(turtle_result['atr']),
-                    'entry_signal': to_list_preserve_precision(turtle_result['entry_signal']),
-                    'exit_signal': to_list_preserve_precision(turtle_result['exit_signal'])
-                }
             except Exception as e:
                 logger.error(f"海龟法则计算失败: {e}")
                 results['turtle'] = None
-    
+
     return results
 
 class BinanceClient:
     """币安API客户端"""
-    
+
     def __init__(self):
         self.api_url = _config["binance_api_url"]
         self.session = None
-    
+
     async def __aenter__(self):
         """异步上下文管理器入口"""
         connector = aiohttp.TCPConnector(limit=100, limit_per_host=30)
@@ -513,12 +459,12 @@ class BinanceClient:
             trust_env=True
         )
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """异步上下文管理器出口"""
         if self.session:
             await self.session.close()
-    
+
     async def get_klines(self, symbol: str, interval: str, limit: int = 500) -> pd.DataFrame:
         """异步获取K线数据，支持重试"""
         url = f"{self.api_url}/fapi/v1/klines"
@@ -534,25 +480,26 @@ class BinanceClient:
                     response.raise_for_status()
                     data = await response.json()
                     logger.info(f"获取K线数据: {symbol} {interval}, 数据点数: {len(data)}")
-                    
+
                     # 验证返回数据量
                     if len(data) != limit:
                         logger.warning(f"预期 {limit} 根K线，实际返回 {len(data)} 根")
-                    
+
                     # 转换为DataFrame
                     df = pd.DataFrame(data, columns=[
                         'timestamp', 'open', 'high', 'low', 'close', 'volume',
                         'close_time', 'quote_volume', 'trades', 'taker_buy_base',
                         'taker_buy_quote', 'ignore'
                     ])
-                    
+
                     # 转换数据类型为float64（TA-Lib要求）
+                    # 优化：只保留需要的数值列以减少内存
                     numeric_columns = ['open', 'high', 'low', 'close', 'volume']
                     for col in numeric_columns:
                         df[col] = pd.to_numeric(df[col], errors='coerce').astype('float64')
-                    
+
                     # 保存原始时间戳（毫秒）
-                    df['timestamp_ms'] = df['timestamp'].astype(int)
+                    df['timestamp_ms'] = df['timestamp'].astype('int64')
 
                     if not df.empty:
                         # 1. 获取最后一行数据
@@ -563,7 +510,6 @@ class BinanceClient:
                         last_close_time = int(last_row['close_time'])
 
                         # 3. 转换为可读时间字符串 (方便日志查看)
-                        # 注意：这里默认是UTC时间，与币安保持一致
                         last_close_str = pd.to_datetime(last_close_time, unit='ms').strftime('%Y-%m-%d %H:%M:%S')
                         current_time_str = pd.to_datetime(current_time_ms, unit='ms').strftime('%Y-%m-%d %H:%M:%S')
 
@@ -575,11 +521,11 @@ class BinanceClient:
                             # 执行移除
                             df = df.iloc[:-1]
                         else:
-                            # 调试用：如果没有过滤，也可以打个日志确认一下 (如果嫌日志太乱可以注释掉下面这行)
                             logger.debug(f"✓ K线已完成 (收盘 {last_close_str} < 当前 {current_time_str})，无需过滤")
-                    # 转换时间戳为datetime用于排序
+
+                    # 转换时间戳为datetime用于排序和计算（如VWAP）
                     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                    
+
                     # 验证时间戳连续性（允许5%的容差）
                     interval_ms = {
                         '1m': 60_000, '3m': 180_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000,
@@ -590,10 +536,10 @@ class BinanceClient:
                         tolerance = interval_ms * 0.05  # 5%容差
                         if not ((time_diffs >= interval_ms - tolerance) & (time_diffs <= interval_ms + tolerance)).all():
                             logger.warning(f"K线时间戳不连续: {symbol} {interval}，但继续处理")
-                    
+
                     logger.info(f"数据排序验证: 开始时间 {df['timestamp'].iloc[0]}, 结束时间 {df['timestamp'].iloc[-1]}")
                     return df
-                
+
             except ClientResponseError as e:
                 if attempt < _config["retry_attempts"] - 1:
                     logger.warning(f"请求失败，第 {attempt + 1} 次重试: {e}")
@@ -609,20 +555,20 @@ def validate_config(config: Dict) -> None:
     """验证配置参数"""
     if not config:
         raise ValueError("config参数不能为空")
-    
+
     required_keys = ['limit', 'rsi', 'macd', 'bb', 'sma', 'ema', 'adx', 'stoch_rsi']
     for key in required_keys:
         if key not in config:
             raise ValueError(f"config中缺少必需的参数: {key}")
-    
+
     if not isinstance(config['stoch_rsi'], dict):
         raise ValueError("stoch_rsi必须是字典类型")
-    
+
     stoch_rsi_keys = ['period', 'kSmooth', 'dSmooth']
     for key in stoch_rsi_keys:
         if key not in config['stoch_rsi']:
             raise ValueError(f"stoch_rsi中缺少必需的参数: {key}")
-    
+
     # 验证新增参数
     if 'atr' in config and not isinstance(config['atr'], dict):
         raise ValueError("atr 必须是字典类型")
@@ -634,17 +580,17 @@ def validate_config(config: Dict) -> None:
         raise ValueError("volume_ma 必须是整数类型")
     if 'fib' in config and not isinstance(config['fib'], dict):
         raise ValueError("fib 必须是字典类型")
-    
+
     # 验证蜡烛形态参数
     if 'patterns' in config:
         if not isinstance(config['patterns'], bool):
             raise ValueError("patterns 必须是布尔类型")
-    
+
     # 验证海龟法则参数
     if 'turtle' in config:
         if not isinstance(config['turtle'], dict):
             raise ValueError("turtle 必须是字典类型")
-        
+
         turtle_keys = ['entryPeriod', 'exitPeriod', 'atrPeriod']
         for key in turtle_keys:
             if key not in config['turtle']:
@@ -654,120 +600,113 @@ def validate_config(config: Dict) -> None:
 
 async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict[str, Any]:
     """
-    计算技术指标 - 主接口函数，过滤 null 数据
-    
-    Args:
-        symbol: 交易对符号，如 'BTCUSDT'
-        interval: 时间间隔，如 '15m', '1h', '1d'
-        config: 技术指标配置参数
-        
-    Returns:
-        dict: 包含所有技术指标的字典，仅包含完整指标行
+    计算技术指标 - 主接口函数
+    [优化]: 返回列式存储结构 (Dictionary of Lists)，大幅减少 Tokens
     """
     try:
         # 验证配置参数
         validate_config(config)
-        
+
         # 获取K线数据
         async with BinanceClient() as client:
             df = await client.get_klines(symbol, interval, config['limit'])
-        
+
         if df.empty:
             raise ValueError(f"无法获取 {symbol} 的K线数据")
-        
+
         # 计算技术指标
         indicators_data = calculate_all_indicators(df, config)
 
-        # 构建完整时间序列数据
+        # 构建基础DataFrame
+        # 使用缩写键名以减少 Token
         result_df = pd.DataFrame({
-            'timestamp': df['timestamp_ms'],
-            'close': df['close'],
-            'volume': df['volume'],
+            't': df['timestamp_ms'], # 缩短: timestamp -> t
+            'c': df['close'],        # 缩短: close -> c
+            'v': df['volume'],       # 缩短: volume -> v
             'rsi': indicators_data['rsi'],
             'sma': indicators_data['sma'],
             'ema': indicators_data['ema'],
-            'bb_upper': indicators_data['bollinger_bands']['upper'],
-            'bb_basis': indicators_data['bollinger_bands']['middle'],
-            'bb_lower': indicators_data['bollinger_bands']['lower'],
+            'bb_u': indicators_data['bollinger_bands']['upper'],
+            'bb_m': indicators_data['bollinger_bands']['middle'],
+            'bb_l': indicators_data['bollinger_bands']['lower'],
             'macd': indicators_data['macd']['macd'],
-            'macd_signal': indicators_data['macd']['signal'],
-            'macd_histogram': indicators_data['macd']['histogram'],
-            'stoch_rsi_k': indicators_data['stochastic_rsi']['k_percent'],
-            'stoch_rsi_d': indicators_data['stochastic_rsi']['d_percent'],
-            'adx': indicators_data['adx'],
-            'atr': indicators_data.get('atr', [None] * len(df)),
-            'obv': indicators_data.get('obv', [None] * len(df)),
-            'vwap': indicators_data.get('vwap', [None] * len(df)),
-            'volume_ma': indicators_data.get('volume_ma', [None] * len(df))
+            'macd_s': indicators_data['macd']['signal'],
+            'macd_h': indicators_data['macd']['histogram'],
+            'k': indicators_data['stochastic_rsi']['k_percent'],
+            'd': indicators_data['stochastic_rsi']['d_percent'],
+            'adx': indicators_data['adx']
         })
 
-        # 斐波那契回撤位将在最后单独提取
+        # 添加可选指标
+        if 'atr' in indicators_data: result_df['atr'] = indicators_data['atr']
+        if 'obv' in indicators_data: result_df['obv'] = indicators_data['obv']
+        if 'vwap' in indicators_data: result_df['vwap'] = indicators_data['vwap']
+        if 'volume_ma' in indicators_data: result_df['v_ma'] = indicators_data['volume_ma']
 
-        # 蜡烛形态：为每个时间点给出活跃形态列表，作为一列与 rsi/sma 等平级
-        if 'patterns' in indicators_data and isinstance(indicators_data['patterns'], dict):
-            # 构建每个时间点的形态列表
-            pattern_series_dict = {
-                name: pd.Series(series, index=df.index) for name, series in indicators_data['patterns'].items()
-            }
-            pattern_names = list(pattern_series_dict.keys())
-            def collect_patterns_at_idx(idx):
-                acts = []
-                for name in pattern_names:
-                    try:
-                        val = int(pattern_series_dict[name].iloc[idx])
-                        if val != 0:
-                            acts.append({'name': name, 'value': val})
-                    except Exception:
-                        pass
-                return acts
-            # 通过行索引位置构造列表
-            result_df = result_df.reset_index(drop=True)
-            result_df['patterns'] = [collect_patterns_at_idx(i) for i in range(len(result_df))]
+        # 处理蜡烛形态 (保持稀疏性)
+        if 'patterns' in indicators_data and indicators_data['patterns']:
+            # 仅在有形态发生的时间点记录，否则为 None
+            # 这比返回巨大的全0矩阵更省Token
+            pattern_series_dict = indicators_data['patterns']
+            patterns_list = []
 
-        # 海龟法则：每条记录下用 turtle 包裹
-        if 'turtle' in indicators_data:
-            turtle_data = indicators_data['turtle']
-            if turtle_data is not None and isinstance(turtle_data, dict):
-                # 与记录数量对齐
-                result_df = result_df.reset_index(drop=True)
-                t_upper = turtle_data['upper_channel']
-                t_lower = turtle_data['lower_channel']
-                t_exit_upper = turtle_data['exit_upper']
-                t_exit_lower = turtle_data['exit_lower']
-                t_atr = turtle_data['atr']
-                t_entry = turtle_data['entry_signal']
-                t_exit = turtle_data['exit_signal']
-                turtle_list = []
-                for i in range(len(result_df)):
-                    turtle_list.append({
-                        'upper_channel': t_upper[i] if i < len(t_upper) else None,
-                        'lower_channel': t_lower[i] if i < len(t_lower) else None,
-                        'exit_upper': t_exit_upper[i] if i < len(t_exit_upper) else None,
-                        'exit_lower': t_exit_lower[i] if i < len(t_exit_lower) else None,
-                        'atr': t_atr[i] if i < len(t_atr) else None,
-                        'entry_signal': t_entry[i] if i < len(t_entry) else None,
-                        'exit_signal': t_exit[i] if i < len(t_exit) else None
-                    })
-                result_df['turtle'] = turtle_list
+            # 遍历每一行，收集触发的形态
+            for i in range(len(df)):
+                active_patterns = []
+                for name, series in pattern_series_dict.items():
+                    val = series.iloc[i]
+                    if val != 0:
+                        # 记录形如 "CDLDOJI:100"
+                        active_patterns.append(f"{name}:{int(val)}")
+                patterns_list.append(active_patterns if active_patterns else None)
 
-        # 关键指标非空过滤（避免过多空值记录）
-        key_indicators = ['rsi', 'sma', 'ema', 'macd', 'macd_signal', 'adx']
-        result_df = result_df.dropna(subset=key_indicators)
+            result_df['ptn'] = patterns_list
 
-        # 转字典并清理 NaN
-        records = result_df.to_dict('records')
-        records = clean_nan_values(records)
+        # 处理海龟法则
+        if 'turtle' in indicators_data and indicators_data['turtle']:
+            td = indicators_data['turtle']
+            result_df['t_up'] = td['upper_channel']
+            result_df['t_dn'] = td['lower_channel']
+            result_df['t_sig'] = td['entry_signal']
+            # 仅保留关键通道和信号，减少非必要数据
+
+        # 1. 过滤无效行 (去除头部计算导致的NaN)
+        # 只要关键指标为空，该行数据对AI分析意义不大
+        key_indicators = ['rsi', 'sma', 'ema', 'macd', 'adx']
+        # 确保列存在才过滤
+        filter_cols = [k for k in key_indicators if k in result_df.columns]
+        if filter_cols:
+            result_df = result_df.dropna(subset=filter_cols)
+
+        # 2. [核心优化] 转为列式存储 (Dict of Lists)
+        # 不使用 to_dict('records')，而是 to_dict('list')
+        # 配合 round_float 减少精度
+        final_data = {}
+        for col in result_df.columns:
+            # 获取该列数据
+            series = result_df[col]
+            # 如果是列表类型（如patterns），直接取值
+            if col == 'ptn':
+                final_data[col] = series.tolist()
+            else:
+                # 数值类型，进行精度截断
+                final_data[col] = [round_float(x) for x in series.tolist()]
+
+        # 3. 移除全为 None 的列 (进一步清理)
+        keys_to_remove = [k for k, v in final_data.items() if all(x is None for x in v)]
+        for k in keys_to_remove:
+            del final_data[k]
 
         # 构建返回结果
-        result = {'indicators': records}
-        
+        result = {'indicators': final_data}
+
         # 斐波那契回撤位：提取到与 indicators 同级别，只返回最新值
         if 'fibonacci_retracement' in indicators_data:
             result['fibonacci'] = indicators_data['fibonacci_retracement']
 
-        logger.info(f"技术指标计算完成: {symbol} {interval}, 数据点数: {len(records)}")
+        logger.info(f"技术指标计算完成: {symbol} {interval}, 列式结构, 数据点数: {len(result_df)}")
         return result
-    
+
     except Exception as e:
         logger.error(f"计算技术指标失败: {e}")
         return {
