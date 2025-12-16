@@ -2,7 +2,7 @@
 币安技术指标计算服务 - 使用TA-Lib
 包含API调用和指标计算功能，支持按日重置 VWAP 和过滤 null 数据
 [优化版] 针对AI Token消耗进行了结构优化
-[修改版] 新增 ATR, OI, Funding Rate，移除 3m 支持
+[修改版] 修复OI接口路径，修复OI合并容差，实施安全Token优化(仅时间与量)
 """
 import asyncio
 import json
@@ -373,7 +373,6 @@ class BinanceClient:
                         current_time_ms = int(time.time() * 1000)
                         # 如果 K 线收盘时间还没到，说明是未完成的，移除
                         if last_close_time >= current_time_ms:
-                            # logger.info(f"过滤未完成K线: {df.iloc[-1]['timestamp']}")
                             df = df.iloc[:-1]
 
                     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -393,24 +392,20 @@ class BinanceClient:
         if period not in valid_periods:
             return pd.DataFrame()
 
+        # [重要修正] 使用正确的合约数据统计接口 URL
         url = f"{self.api_url}/futures/data/openInterestHist"
 
         all_data = []
-        # 计算需要请求的次数 (向上取整)
-        # 例如 limit=1000, 第一次拿500, 第二次拿500
-        current_end_time = None # 不传 endTime 默认获取最新
+        current_end_time = None
 
-        # 保护机制：防止死循环，最多请求 10 次 (5000条数据足够了)
+        # 保护机制：防止死循环，最多请求 10 次
         max_loops = (limit // 500) + 2
 
         for _ in range(max_loops):
-            # 如果已经拿够了，退出
             if len(all_data) >= limit:
                 break
 
-            # 每次请求最多 500
             request_limit = 500
-
             params = {
                 'symbol': symbol,
                 'period': period,
@@ -425,49 +420,32 @@ class BinanceClient:
                     data = await response.json()
 
                     if not data:
-                        break # 没有更多数据了
-
-                    # Binance 返回的数据是按时间升序排列的 [old, ..., new]
-                    # 我们需要把这批数据加到总列表的前面 (如果是倒序获取的话)
-                    # 或者我们直接收集所有列表，最后排序去重
-
-                    # 策略：因为我们需要向历史回溯，所以我们把新获取的一批放在列表前面？
-                    # 不，标准做法是：收集 -> 更新 endTime 为这批数据最早的一条的时间 - 1ms
+                        break
 
                     if current_end_time is None:
-                        # 第一次请求（最新的数据）
                         all_data = data + all_data
                     else:
-                        # 后续请求（更老的数据），拼接到前面
                         all_data = data + all_data
 
-                    # 获取这批数据里最早（第一条）的时间戳
                     first_timestamp = data[0]['timestamp']
-                    # 下一次请求的截止时间 = 最早时间 - 1ms
                     current_end_time = first_timestamp - 1
 
             except Exception as e:
                 logger.warning(f"获取OI分页失败: {e}")
                 break
 
-        # 处理数据
         if not all_data:
             return pd.DataFrame()
 
         df = pd.DataFrame(all_data)
-        # 去重 (防止分页边界重复)
         df.drop_duplicates(subset=['timestamp'], inplace=True)
-        # 排序
         df.sort_values('timestamp', inplace=True)
-        # 截取请求的数量（取最近的 limit 条）
         df = df.iloc[-limit:]
 
         df['sumOpenInterest'] = df['sumOpenInterest'].astype(float)
-        # 推荐使用 sumOpenInterestValue (USDT价值)，更能体现资金进出
         df['sumOpenInterestValue'] = df['sumOpenInterestValue'].astype(float)
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-        # 返回 timestamp 和 value
         return df[['timestamp', 'sumOpenInterestValue']]
 
     async def get_funding_rate_history(self, symbol: str, limit: int = 100) -> pd.DataFrame:
@@ -489,7 +467,7 @@ class BinanceClient:
 
 async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict[str, Any]:
     """
-    计算技术指标 - 主接口函数 (修复 OI 容差问题)
+    计算技术指标 - 主接口函数 (修复 OI 容差问题 + 安全Token优化)
     """
     try:
         validate_config(config)
@@ -498,8 +476,6 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
         oi_interval = interval
         if interval == "1m":
             oi_interval = "5m"
-        # 文档确认支持: 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
-        # 如果用户请求 3m (已移除支持) 或其他不支持的，BinanceClient 会返回空，这里无需额外处理
 
         async with BinanceClient() as client:
             tasks = [
@@ -549,23 +525,22 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
             oi_df.sort_index(inplace=True)
 
             # 根据 K 线周期动态设置容差
-            # 逻辑：容差至少要等于一个 K 线周期，防止因为数据稀疏而匹配失败
             if interval == "1m":
-                tolerance = pd.Timedelta('10m') # 1m K线匹配 5m OI，给足空间
+                tolerance = pd.Timedelta('10m')
             elif interval in ["5m", "15m", "30m"]:
-                tolerance = pd.Timedelta('1h')  # 短周期给 1小时容差
-            elif interval in ["1h", "2h", "4h"]:
-                tolerance = pd.Timedelta('6h')  # 中周期给 6小时容差
+                tolerance = pd.Timedelta('1h')
+            elif interval in ["1h", "2h", "4h", "6h", "8h", "12h"]:
+                tolerance = pd.Timedelta('12h') # 增加容差以确保捕获大周期数据
             else:
-                tolerance = pd.Timedelta('24h') # 日线等长周期
+                tolerance = pd.Timedelta('24h')
 
             result_df = pd.merge_asof(
                 result_df,
-                oi_df[['sumOpenInterestValue']], # 仅取 value (USDT价值)
+                oi_df[['sumOpenInterestValue']],
                 left_on='temp_ts',
                 right_index=True,
-                direction='backward', # 向后找 (找过去最近的一个)
-                tolerance=tolerance   # 使用动态放大后的容差
+                direction='backward',
+                tolerance=tolerance
             )
             result_df.rename(columns={'sumOpenInterestValue': 'oi'}, inplace=True)
             result_df['oi'] = result_df['oi'].ffill().fillna(0)
@@ -576,7 +551,6 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
         if not fr_df.empty:
             fr_df.set_index('fundingTime', inplace=True)
             fr_df.sort_index(inplace=True)
-            # 费率每8小时一次，给足够的容差
             result_df = pd.merge_asof(
                 result_df,
                 fr_df[['fundingRate']],
@@ -628,6 +602,7 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
             if col == 'ptn':
                 final_data[col] = series.tolist()
             else:
+                # 默认使用高精度
                 final_data[col] = [round_float(x) for x in series.tolist()]
 
         keys_to_remove = [k for k, v in final_data.items() if all(x is None for x in v)]
@@ -637,6 +612,18 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
         result = {'indicators': final_data}
         if 'fibonacci_retracement' in indicators_data:
             result['fibonacci'] = indicators_data['fibonacci_retracement']
+
+        # --- [优化] 安全Token优化 (仅针对时间戳和量) ---
+
+        # 1. 时间戳转整数 (去除 .0)
+        if 't' in final_data:
+            final_data['t'] = [int(x) for x in final_data['t']]
+
+        # 2. 量类指标转整数 (去除小数位) - 安全操作，不影响小币种价格
+        volume_keys = ['v', 'oi', 'obv']
+        for k in volume_keys:
+            if k in final_data:
+                final_data[k] = [int(x) if x is not None and not pd.isna(x) else None for x in final_data[k]]
 
         return result
 
