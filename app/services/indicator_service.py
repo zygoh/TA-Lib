@@ -3,6 +3,7 @@
 包含API调用和指标计算功能，支持按日重置 VWAP 和过滤 null 数据
 [优化版] 针对AI Token消耗进行了结构优化
 [修改版] 修复OI接口路径，修复OI合并容差，实施安全Token优化(仅时间与量)
+[增强版] VWAP增加Session模式 (固定时长重置)
 """
 import asyncio
 import json
@@ -144,7 +145,13 @@ class TechnicalIndicators:
         return pd.Series(talib.SMA(volume.values, timeperiod=period), index=volume.index)
 
     @staticmethod
-    def vwap(df: pd.DataFrame, period: str = None) -> pd.Series:
+    def vwap(df: pd.DataFrame, period: str = None, session_hours: int = None) -> pd.Series:
+        """
+        计算VWAP
+        :param df: 包含 high, low, close, volume, timestamp 的 DataFrame
+        :param period: 'day' (自然日重置), 'session' (固定时长重置), 或 None (全量累计)
+        :param session_hours: 当 period='session' 时的重置周期（小时）
+        """
         if df['volume'].isna().any():
             volume_filled = df['volume'].ffill().fillna(0)
         else:
@@ -152,23 +159,39 @@ class TechnicalIndicators:
 
         typical_price = (df['high'] + df['low'] + df['close']) / 3
 
+        # 确保 timestamp 是 datetime
+        if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+            ts = pd.to_datetime(df['timestamp'], unit='ms')
+        else:
+            ts = df['timestamp']
+
+        # -------- 日 VWAP --------
         if period == 'day':
             df_copy = df.copy()
-            if pd.api.types.is_datetime64_any_dtype(df_copy['timestamp']):
-                df_copy['date'] = df_copy['timestamp'].dt.date
-            else:
-                df_copy['date'] = pd.to_datetime(df_copy['timestamp'], unit='ms').dt.date
+            df_copy['anchor'] = ts.dt.date
 
-            def calc_vwap(x):
-                vol = volume_filled.loc[x.index]
-                tp = typical_price.loc[x.index]
-                return (vol * tp).cumsum() / vol.cumsum()
+        # -------- Session VWAP --------
+        elif period == 'session' and session_hours:
+            df_copy = df.copy()
+            # 这里的 session_hours 必须是整数，例如 4, 8, 12
+            df_copy['anchor'] = ts.dt.floor(f'{session_hours}h')
 
-            vwap = df_copy.drop(columns=['date']).groupby(df_copy['date'], group_keys=False).apply(calc_vwap)
-            return vwap
+        # -------- 全量 VWAP（兜底） --------
         else:
-            vwap = (typical_price * volume_filled).cumsum() / volume_filled.cumsum()
-            return vwap
+            return (typical_price * volume_filled).cumsum() / volume_filled.cumsum()
+
+        def calc_vwap(x):
+            vol = volume_filled.loc[x.index]
+            tp = typical_price.loc[x.index]
+            return (vol * tp).cumsum() / vol.cumsum()
+
+        vwap = (
+            df_copy
+            .groupby(df_copy['anchor'], group_keys=False)
+            .apply(calc_vwap)
+        )
+
+        return vwap
 
     @staticmethod
     def fibonacci_retracement(df: pd.DataFrame, period: int = 100) -> Dict[str, float]:
@@ -302,7 +325,13 @@ def calculate_all_indicators(df: pd.DataFrame, config: Dict[str, Any]) -> Dict[s
         results['obv'] = indicators.obv(df['close'], df['volume'])
 
     if 'vwap' in config:
-        results['vwap'] = indicators.vwap(df, config['vwap'].get('period'))
+        # 修正: 支持 session_hours 参数
+        vwap_cfg = config['vwap']
+        results['vwap'] = indicators.vwap(
+            df,
+            period=vwap_cfg.get('period'),
+            session_hours=vwap_cfg.get('session_hours')
+        )
 
     if 'volume_ma' in config:
         results['volume_ma'] = indicators.volume_ma(df['volume'], config['volume_ma'])
