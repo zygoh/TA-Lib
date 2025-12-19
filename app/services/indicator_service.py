@@ -188,7 +188,7 @@ class TechnicalIndicators:
         vwap = (
             df_copy
             .groupby(df_copy['anchor'], group_keys=False)
-            .apply(calc_vwap)
+            .apply(calc_vwap, include_groups=False)
         )
 
         return vwap
