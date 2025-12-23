@@ -149,7 +149,7 @@ class TechnicalIndicators:
         """
         [修复版] 计算VWAP - 使用向量化 cumsum 替代 apply，修复多列赋值错误
         :param df: 包含 high, low, close, volume, timestamp 的 DataFrame
-        :param period: 'day' (自然日重置), 'session' (固定时长重置), 或 None (全量累计)
+        :param period: 'day' (自然日重置), 'session' (固定时长重置), 或 None    (全量累计)
         :param session_hours: 当 period='session' 时的重置周期（小时）
         """
         # 1. 准备基础数据
