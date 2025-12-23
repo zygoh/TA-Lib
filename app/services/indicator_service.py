@@ -147,51 +147,46 @@ class TechnicalIndicators:
     @staticmethod
     def vwap(df: pd.DataFrame, period: str = None, session_hours: int = None) -> pd.Series:
         """
-        计算VWAP
+        [修复版] 计算VWAP - 使用向量化 cumsum 替代 apply，修复多列赋值错误
         :param df: 包含 high, low, close, volume, timestamp 的 DataFrame
         :param period: 'day' (自然日重置), 'session' (固定时长重置), 或 None (全量累计)
         :param session_hours: 当 period='session' 时的重置周期（小时）
         """
+        # 1. 准备基础数据
         if df['volume'].isna().any():
             volume_filled = df['volume'].ffill().fillna(0)
         else:
             volume_filled = df['volume']
 
         typical_price = (df['high'] + df['low'] + df['close']) / 3
+        # 计算成交额 (Volume * Price)
+        vp = volume_filled * typical_price
 
-        # 确保 timestamp 是 datetime
-        if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
-            ts = pd.to_datetime(df['timestamp'], unit='ms')
-        else:
-            ts = df['timestamp']
-
-        # -------- 日 VWAP --------
+        # 2. 确定分组锚点 (Anchor)
         if period == 'day':
-            df_copy = df.copy()
-            df_copy['anchor'] = ts.dt.date
-
-        # -------- Session VWAP --------
+            if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+                ts = pd.to_datetime(df['timestamp'], unit='ms')
+            else:
+                ts = df['timestamp']
+            anchor = ts.dt.date
         elif period == 'session' and session_hours:
-            df_copy = df.copy()
-            # 这里的 session_hours 必须是整数，例如 4, 8, 12
-            df_copy['anchor'] = ts.dt.floor(f'{session_hours}h')
-
-        # -------- 全量 VWAP（兜底） --------
+            if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+                ts = pd.to_datetime(df['timestamp'], unit='ms')
+            else:
+                ts = df['timestamp']
+            # 使用 floor 进行时间对齐 (例如 4h, 12h)
+            anchor = ts.dt.floor(f'{session_hours}h')
         else:
-            return (typical_price * volume_filled).cumsum() / volume_filled.cumsum()
+            # 模式3: 全量累计 (无分组)
+            return vp.cumsum() / volume_filled.cumsum()
 
-        def calc_vwap(x):
-            vol = volume_filled.loc[x.index]
-            tp = typical_price.loc[x.index]
-            return (vol * tp).cumsum() / vol.cumsum()
+        # 3. 向量化分组计算 (Vectorized Calculation)
+        # 关键修复: 使用 groupby().cumsum() 保证返回的一定是 Series，且索引与原表对齐
+        # 相比 apply()，这避免了 Pandas 尝试重构 DataFrame 的行为
+        grouped_vp_cumsum = vp.groupby(anchor).cumsum()
+        grouped_vol_cumsum = volume_filled.groupby(anchor).cumsum()
 
-        vwap = (
-            df_copy
-            .groupby(df_copy['anchor'], group_keys=False)
-            .apply(calc_vwap, include_groups=False)
-        )
-
-        return vwap
+        return grouped_vp_cumsum / grouped_vol_cumsum
 
     @staticmethod
     def fibonacci_retracement(df: pd.DataFrame, period: int = 100) -> Dict[str, float]:
