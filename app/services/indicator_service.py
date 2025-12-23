@@ -108,10 +108,25 @@ class TechnicalIndicators:
     @staticmethod
     def stochastic_rsi(data: pd.Series, rsi_period: int = 14, stoch_period: int = 14, k_smooth: int = 3, d_smooth: int = 3) -> Dict[str, pd.Series]:
         data = ensure_float64(data)
-        k_percent, d_percent = talib.STOCHRSI(data.values, timeperiod=rsi_period, fastk_period=stoch_period, fastd_period=d_smooth, fastd_matype=0)
+        # 1. 先算 RSI
+        rsi_series = talib.RSI(data.values, timeperiod=rsi_period)
+
+        # 2. 对 RSI 算 STOCH (注意：Stoch 需要 High/Low/Close，这里全传 RSI 即可)
+        # TA-Lib 的 STOCH 函数支持 slowk_period (即 kSmooth) 和 slowd_period (即 dSmooth)
+        slowk, slowd = talib.STOCH(
+            rsi_series,
+            rsi_series,
+            rsi_series,
+            fastk_period=stoch_period,
+            slowk_period=k_smooth,
+            slowk_matype=0,
+            slowd_period=d_smooth,
+            slowd_matype=0
+        )
+
         return {
-            'k_percent': pd.Series(k_percent, index=data.index),
-            'd_percent': pd.Series(d_percent, index=data.index)
+            'k_percent': pd.Series(slowk, index=data.index),
+            'd_percent': pd.Series(slowd, index=data.index)
         }
 
     @staticmethod
