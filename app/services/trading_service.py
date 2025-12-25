@@ -358,7 +358,7 @@ async def get_account_markdown() -> str:
     
     markdown = f"""账户详情：
 
-时间: {formatted['timestamp']}
+当前时间戳: {formatted['timestamp']}
 
 单币仓位: {formatted['single_coin_position']}
 
