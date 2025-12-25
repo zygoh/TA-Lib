@@ -344,6 +344,7 @@ async def format_account_response(account_data: Dict[str, Any]) -> Dict[str, Any
     safe_leverage_display = FIXED_LEVERAGE - 1
     
     single_coin_position = (
+        f"'仓位大小（position_size_usd）：'"
         f"山寨{int(alt_min)}-{int(alt_max)} U({safe_leverage_display}x杠杆) | "
         f"BTC/ETH {int(btc_min)}-{int(btc_max)} U({safe_leverage_display}x杠杆)"
     )
