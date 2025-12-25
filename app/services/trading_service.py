@@ -566,12 +566,12 @@ async def process_trading_signals(signals: List[Dict[str, Any]]) -> Dict[str, An
         # 2. 开仓信号校验 (包含信心度检查)
         if action in ["open_long", "open_short"]:
             confidence = signal.get("confidence", 0)
-            if confidence < 90:
+            if confidence < 60:
                 results.append({
                     "symbol": symbol,
                     "action": action,
                     "status": "rejected",
-                    "reason": f"信心不足 {confidence} < 90"
+                    "reason": f"信心不足 {confidence} < 60"
                 })
                 continue
             
