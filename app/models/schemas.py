@@ -2,7 +2,7 @@
 请求和响应数据模型
 """
 from pydantic import BaseModel, Field
-from typing import Optional,Dict, Any
+from typing import Optional, Dict, Any, List
 
 # 技术指标计算请求模型
 class IndicatorRequest(BaseModel):
@@ -11,13 +11,22 @@ class IndicatorRequest(BaseModel):
     interval: str = Field(..., description="时间间隔，如15m, 1h, 1d")
     config: Dict[str, Any] = Field(..., description="技术指标配置参数")
 
-# --- 新增：交易信号请求模型 (添加这个类) ---
+# --- 交易信号请求模型 ---
+class TradingSignal(BaseModel):
+    """单个交易信号模型"""
+    symbol: str = Field(..., description="交易对符号，如 BTCUSDT")
+    action: str = Field(..., description="操作类型: open_long, open_short, close_long, close_short, adjust_stops, wait, hold")
+    leverage: Optional[int] = Field(None, description="杠杆倍数（开仓时，但系统固定使用20x，此字段可忽略）")
+    position_size_usd: Optional[float] = Field(None, description="仓位大小（USD，开仓时必填）")
+    stop_loss: Optional[float] = Field(None, description="止损价格（开仓或调整时必填）")
+    take_profit: Optional[float] = Field(None, description="止盈价格（开仓或调整时必填）")
+    confidence: Optional[int] = Field(None, description="信心度 0-100（开仓时必填，需≥90）")
+    risk_usd: Optional[float] = Field(None, description="风险金额（USD，开仓时必填）")
+    reasoning: Optional[str] = Field(None, description="操作原因说明（可选）")
+
 class TradingSignalsRequest(BaseModel):
     """交易信号请求模型"""
-    exchange: str = Field("binance", description="交易所名称，默认为 binance")
-    symbol: str = Field(..., description="交易对，例如 ETH/USDT")
-    interval: str = Field(..., description="时间周期，例如 15m, 1h, 4h")
-    # 你可以在这里添加更多字段，比如策略参数等
+    signals: List[TradingSignal] = Field(..., description="交易信号列表")
 
 
 class ImageGenerateRequest(BaseModel):

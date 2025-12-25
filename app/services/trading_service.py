@@ -569,7 +569,7 @@ async def process_trading_signals(signals: List[Dict[str, Any]]) -> Dict[str, An
                 })
                 continue
             
-            req_fields = ["leverage", "position_size_usd", "stop_loss", "take_profit", "risk_usd"]
+            req_fields = ["position_size_usd", "stop_loss", "take_profit", "risk_usd"]
             if any(signal.get(f) is None for f in req_fields):
                 results.append({
                     "symbol": symbol,
