@@ -239,8 +239,9 @@ async def format_account_summary(account_data: Dict[str, Any], positions_count: 
     pnl_percent = (total_unrealized_pnl / total_wallet_balance * 100) if total_wallet_balance > 0 else 0
     margin_ratio = ((equity - available_balance) / equity * 100) if equity > 0 else 0
     
-    return (f"净值{equity:.2f} USDT | "
-            f"最大开仓金额{max_position_size:.2f} USDT | "
+    max_position_size = equity * safe_leverage
+    return (f"账户净值{equity:.2f} USDT（实际资金） | "
+            f"最大可开仓金额{max_position_size:.2f} USDT（净值×{int(safe_leverage)}杠杆） | "
             f"可用余额{available_balance:.2f} ({balance_ratio:.1f}%) | "
             f"盈亏{pnl_percent:+.2f}% | "
             f"保证金占用{margin_ratio:.1f}% | "
@@ -341,12 +342,10 @@ async def format_account_response(account_data: Dict[str, Any]) -> Dict[str, Any
     alt_min, alt_max = calculate_position_limits(equity, is_btc_eth=False)
     btc_min, btc_max = calculate_position_limits(equity, is_btc_eth=True)
     
-    max_position_size = equity * safe_leverage
     single_coin_position = (
-        f"账户净值{equity:.2f} USDT（实际资金） | "
-        f"最大可开仓金额{max_position_size:.2f} USDT（净值×{int(safe_leverage)}杠杆） | "
-        f"单币最小仓位：山寨{int(alt_min)} USDT，BTC/ETH {int(btc_min)} USDT | "
-        f"单币最大仓位：山寨{int(alt_max)} USDT，BTC/ETH {int(btc_max)} USDT"
+        f"单币仓位范围（position_size_usd）："
+        f"山寨{int(alt_min)}-{int(alt_max)} USDT | "
+        f"BTC/ETH {int(btc_min)}-{int(btc_max)} USDT"
     )
     
     account_summary = await format_account_summary(account_data, positions_count)
