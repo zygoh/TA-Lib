@@ -84,7 +84,7 @@ class BinanceClient:
         _, api_secret = self._get_api_credentials()
         if not api_secret:
             return ""
-        query_string = urlencode(params)
+        query_string = urlencode(params, doseq=True)
         signature = hmac.new(
             api_secret.encode('utf-8'),
             query_string.encode('utf-8'),
@@ -110,8 +110,9 @@ class BinanceClient:
         if method in ["POST", "DELETE"] and data:
             all_params.update(data)
         
-        # 添加时间戳
+        # 添加时间戳和接收窗口
         all_params['timestamp'] = int(time.time() * 1000)
+        all_params['recvWindow'] = 5000
         
         # 计算签名（基于所有参数）
         all_params['signature'] = self._sign_request(all_params)
@@ -476,7 +477,8 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
                     "type": "STOP_MARKET",
                     "triggerPrice": sl_price,
                     "closePosition": "true",
-                    "workingType": "MARK_PRICE"
+                    "workingType": "MARK_PRICE",
+                    "timeInForce": "GTC"
                 }
                 if position_mode == "HEDGE_MODE":
                     sl_order_data["positionSide"] = position_side
@@ -490,7 +492,8 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
                     "type": "TAKE_PROFIT_MARKET",
                     "triggerPrice": tp_price,
                     "closePosition": "true",
-                    "workingType": "MARK_PRICE"
+                    "workingType": "MARK_PRICE",
+                    "timeInForce": "GTC"
                 }
                 if position_mode == "HEDGE_MODE":
                     tp_order_data["positionSide"] = position_side
@@ -504,7 +507,7 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
             except Exception:
                 pass
             try:
-                await _client._send_signed_request("DELETE", "/fapi/v1/algo/allOpenOrders", params={"symbol": symbol})
+                await _client._send_signed_request("DELETE", "/fapi/v1/algoOpenOrders", params={"symbol": symbol})
             except Exception:
                 pass
             
@@ -531,7 +534,8 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
                     "type": "STOP_MARKET",
                     "triggerPrice": sl_price,
                     "closePosition": "true",
-                    "workingType": "MARK_PRICE"
+                    "workingType": "MARK_PRICE",
+                    "timeInForce": "GTC"
                 }
                 if position_mode == "HEDGE_MODE":
                     sl_order_data["positionSide"] = position_side
@@ -545,7 +549,8 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
                     "type": "TAKE_PROFIT_MARKET",
                     "triggerPrice": tp_price,
                     "closePosition": "true",
-                    "workingType": "MARK_PRICE"
+                    "workingType": "MARK_PRICE",
+                    "timeInForce": "GTC"
                 }
                 if position_mode == "HEDGE_MODE":
                     tp_order_data["positionSide"] = position_side
