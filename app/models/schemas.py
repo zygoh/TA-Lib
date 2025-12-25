@@ -2,19 +2,18 @@
 请求和响应数据模型
 """
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional,Dict, Any
 
-
-# --- 之前的指标请求模型 (保持不变) ---
+# 技术指标计算请求模型
 class IndicatorRequest(BaseModel):
-    exchange: str = Field("binance", description="交易所名称")
-    symbol: str = Field(..., description="交易对，例如 BTC/USDT")
-    interval: str = Field(..., description="时间周期，例如 1h, 4h, 1d")
-    limit: int = Field(100, description="获取K线数量")
-    indicators: List[Dict[str, Any]] = Field(..., description="指标配置列表")
+    """技术指标计算请求模型"""
+    symbol: str = Field(..., description="交易对符号，如BTCUSDT")
+    interval: str = Field(..., description="时间间隔，如15m, 1h, 1d")
+    config: Dict[str, Any] = Field(..., description="技术指标配置参数")
 
 # --- 新增：交易信号请求模型 (添加这个类) ---
 class TradingSignalsRequest(BaseModel):
+    """交易信号请求模型"""
     exchange: str = Field("binance", description="交易所名称，默认为 binance")
     symbol: str = Field(..., description="交易对，例如 ETH/USDT")
     interval: str = Field(..., description="时间周期，例如 15m, 1h, 4h")
