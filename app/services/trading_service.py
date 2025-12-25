@@ -479,7 +479,7 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
                 }
                 if position_mode == "HEDGE_MODE":
                     sl_order_data["positionSide"] = position_side
-                await _client._send_signed_request("POST", "/fapi/v1/order", data=sl_order_data)
+                await _client._send_signed_request("POST", "/fapi/v1/algo/order", data=sl_order_data)
             
             if tp_price:
                 tp_order_data = {
@@ -492,12 +492,19 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
                 }
                 if position_mode == "HEDGE_MODE":
                     tp_order_data["positionSide"] = position_side
-                await _client._send_signed_request("POST", "/fapi/v1/order", data=tp_order_data)
+                await _client._send_signed_request("POST", "/fapi/v1/algo/order", data=tp_order_data)
                 
             return {"status": "success", "order_id": order_res.get("orderId"), "msg": "开仓成功"}
 
         elif action == "adjust_stops":
-            await _client._send_signed_request("DELETE", "/fapi/v1/allOpenOrders", params={"symbol": symbol})
+            try:
+                await _client._send_signed_request("DELETE", "/fapi/v1/allOpenOrders", params={"symbol": symbol})
+            except Exception:
+                pass
+            try:
+                await _client._send_signed_request("DELETE", "/fapi/v1/algo/allOpenOrders", params={"symbol": symbol})
+            except Exception:
+                pass
             
             positions = await get_positions()
             target_pos = next((p for p in positions if p["symbol"] == symbol), None)
@@ -525,7 +532,7 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
                 }
                 if position_mode == "HEDGE_MODE":
                     sl_order_data["positionSide"] = position_side
-                await _client._send_signed_request("POST", "/fapi/v1/order", data=sl_order_data)
+                await _client._send_signed_request("POST", "/fapi/v1/algo/order", data=sl_order_data)
             
             if tp_price:
                 tp_order_data = {
@@ -538,7 +545,7 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
                 }
                 if position_mode == "HEDGE_MODE":
                     tp_order_data["positionSide"] = position_side
-                await _client._send_signed_request("POST", "/fapi/v1/order", data=tp_order_data)
+                await _client._send_signed_request("POST", "/fapi/v1/algo/order", data=tp_order_data)
             
             return {"status": "success", "msg": "止损止盈已更新"}
 
