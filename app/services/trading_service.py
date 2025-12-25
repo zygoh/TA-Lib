@@ -470,29 +470,31 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
             
             if sl_price:
                 sl_order_data = {
+                    "algoType": "CONDITIONAL",
                     "symbol": symbol,
                     "side": close_side,
                     "type": "STOP_MARKET",
-                    "stopPrice": sl_price,
+                    "triggerPrice": sl_price,
                     "closePosition": "true",
                     "workingType": "MARK_PRICE"
                 }
                 if position_mode == "HEDGE_MODE":
                     sl_order_data["positionSide"] = position_side
-                await _client._send_signed_request("POST", "/fapi/v1/algo/order", data=sl_order_data)
+                await _client._send_signed_request("POST", "/fapi/v1/algoOrder", data=sl_order_data)
             
             if tp_price:
                 tp_order_data = {
+                    "algoType": "CONDITIONAL",
                     "symbol": symbol,
                     "side": close_side,
                     "type": "TAKE_PROFIT_MARKET",
-                    "stopPrice": tp_price,
+                    "triggerPrice": tp_price,
                     "closePosition": "true",
                     "workingType": "MARK_PRICE"
                 }
                 if position_mode == "HEDGE_MODE":
                     tp_order_data["positionSide"] = position_side
-                await _client._send_signed_request("POST", "/fapi/v1/algo/order", data=tp_order_data)
+                await _client._send_signed_request("POST", "/fapi/v1/algoOrder", data=tp_order_data)
                 
             return {"status": "success", "order_id": order_res.get("orderId"), "msg": "开仓成功"}
 
@@ -523,29 +525,31 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
             
             if sl_price:
                 sl_order_data = {
+                    "algoType": "CONDITIONAL",
                     "symbol": symbol,
                     "side": close_side,
                     "type": "STOP_MARKET",
-                    "stopPrice": sl_price,
+                    "triggerPrice": sl_price,
                     "closePosition": "true",
                     "workingType": "MARK_PRICE"
                 }
                 if position_mode == "HEDGE_MODE":
                     sl_order_data["positionSide"] = position_side
-                await _client._send_signed_request("POST", "/fapi/v1/algo/order", data=sl_order_data)
+                await _client._send_signed_request("POST", "/fapi/v1/algoOrder", data=sl_order_data)
             
             if tp_price:
                 tp_order_data = {
+                    "algoType": "CONDITIONAL",
                     "symbol": symbol,
                     "side": close_side,
                     "type": "TAKE_PROFIT_MARKET",
-                    "stopPrice": tp_price,
+                    "triggerPrice": tp_price,
                     "closePosition": "true",
                     "workingType": "MARK_PRICE"
                 }
                 if position_mode == "HEDGE_MODE":
                     tp_order_data["positionSide"] = position_side
-                await _client._send_signed_request("POST", "/fapi/v1/algo/order", data=tp_order_data)
+                await _client._send_signed_request("POST", "/fapi/v1/algoOrder", data=tp_order_data)
             
             return {"status": "success", "msg": "止损止盈已更新"}
 
