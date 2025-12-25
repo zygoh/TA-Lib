@@ -1,7 +1,7 @@
 """
 请求和响应数据模型
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, Dict, Any, List
 
 # 技术指标计算请求模型
@@ -13,8 +13,9 @@ class IndicatorRequest(BaseModel):
 
 # --- 交易信号请求模型 ---
 class TradingSignal(BaseModel):
-    """单个交易信号模型"""
-    symbol: str = Field(..., description="交易对符号，如 BTCUSDT")
+    """单个交易信号模型（支持 pair 和 symbol 两种字段名）"""
+    symbol: Optional[str] = Field(None, description="交易对符号，如 BTCUSDT")
+    pair: Optional[str] = Field(None, description="交易对符号（别名），如 BTCUSDT")
     action: str = Field(..., description="操作类型: open_long, open_short, close_long, close_short, adjust_stops, wait, hold")
     leverage: Optional[int] = Field(None, description="杠杆倍数（开仓时，但系统固定使用20x，此字段可忽略）")
     position_size_usd: Optional[float] = Field(None, description="仓位大小（USD，开仓时必填）")
@@ -23,6 +24,15 @@ class TradingSignal(BaseModel):
     confidence: Optional[int] = Field(None, description="信心度 0-100（开仓时必填，需≥90）")
     risk_usd: Optional[float] = Field(None, description="风险金额（USD，开仓时必填）")
     reasoning: Optional[str] = Field(None, description="操作原因说明（可选）")
+    
+    @model_validator(mode='after')
+    def validate_symbol(self):
+        """确保 symbol 或 pair 至少有一个，并统一为 symbol"""
+        if not self.symbol and not self.pair:
+            raise ValueError("必须提供 symbol 或 pair 字段")
+        if self.pair and not self.symbol:
+            self.symbol = self.pair
+        return self
 
 class TradingSignalsRequest(BaseModel):
     """交易信号请求模型"""

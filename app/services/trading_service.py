@@ -51,7 +51,7 @@ def load_config():
 
 _config = load_config()
 FIXED_LEVERAGE = 20
-
+safe_leverage = FIXED_LEVERAGE - 1.0
 class BinanceClient:
     """币安 API 客户端，复用 Session 提升性能"""
     
@@ -203,7 +203,6 @@ def calculate_position_limits(equity: float, is_btc_eth: bool) -> Tuple[float, f
     BTC/ETH: Min = Equity * 10, Max = Equity * 19
     Alts:    Min = Equity * 5,  Max = Equity * 19
     """
-    safe_leverage = FIXED_LEVERAGE - 1.0
     
     if is_btc_eth:
         min_size = equity * 10.0
@@ -234,15 +233,17 @@ async def format_account_summary(account_data: Dict[str, Any], positions_count: 
     total_unrealized_pnl = float(account_data.get("totalUnrealizedProfit", 0))
     
     equity = total_wallet_balance + total_unrealized_pnl
+    max_position_size = equity * safe_leverage
     
     balance_ratio = (available_balance / equity * 100) if equity > 0 else 0
     pnl_percent = (total_unrealized_pnl / total_wallet_balance * 100) if total_wallet_balance > 0 else 0
     margin_ratio = ((equity - available_balance) / equity * 100) if equity > 0 else 0
     
-    return (f"净值{equity:.2f} | "
-            f"余额{available_balance:.2f} ({balance_ratio:.1f}%) | "
+    return (f"净值{equity:.2f} USDT | "
+            f"最大开仓金额{max_position_size:.2f} USDT | "
+            f"可用余额{available_balance:.2f} ({balance_ratio:.1f}%) | "
             f"盈亏{pnl_percent:+.2f}% | "
-            f"保证金{margin_ratio:.1f}% | "
+            f"保证金占用{margin_ratio:.1f}% | "
             f"持仓{positions_count}个")
 
 async def format_positions(positions_data: List[Dict[str, Any]], open_orders: List[Dict]) -> List[Dict[str, Any]]:
@@ -340,13 +341,12 @@ async def format_account_response(account_data: Dict[str, Any]) -> Dict[str, Any
     alt_min, alt_max = calculate_position_limits(equity, is_btc_eth=False)
     btc_min, btc_max = calculate_position_limits(equity, is_btc_eth=True)
     
-    # 展示用的安全杠杆
-    safe_leverage_display = FIXED_LEVERAGE - 1
-    
+    max_position_size = equity * safe_leverage
     single_coin_position = (
-        f"'仓位限制（position_size_usd）：'"
-        f"山寨{int(alt_min)}-{int(alt_max)} U({safe_leverage_display}x杠杆) | "
-        f"BTC/ETH {int(btc_min)}-{int(btc_max)} U({safe_leverage_display}x杠杆)"
+        f"账户净值{equity:.2f} USDT（实际资金） | "
+        f"最大可开仓金额{max_position_size:.2f} USDT（净值×{int(safe_leverage)}杠杆） | "
+        f"单币最小仓位：山寨{int(alt_min)} USDT，BTC/ETH {int(btc_min)} USDT | "
+        f"单币最大仓位：山寨{int(alt_max)} USDT，BTC/ETH {int(btc_max)} USDT"
     )
     
     account_summary = await format_account_summary(account_data, positions_count)
