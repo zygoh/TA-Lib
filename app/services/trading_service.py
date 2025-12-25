@@ -105,18 +105,24 @@ class BinanceClient:
         if data is None:
             data = {}
         
-        params['timestamp'] = int(time.time() * 1000)
-        params['signature'] = self._sign_request(params)
+        # 合并所有参数（GET 用 params，POST/DELETE 用 data）
+        all_params = params.copy()
+        if method in ["POST", "DELETE"] and data:
+            all_params.update(data)
+        
+        # 添加时间戳
+        all_params['timestamp'] = int(time.time() * 1000)
+        
+        # 计算签名（基于所有参数）
+        all_params['signature'] = self._sign_request(all_params)
 
         session = await self._get_session()
         
         if method == "GET":
-            async with session.request(method, url, headers=headers, params=params) as response:
+            async with session.request(method, url, headers=headers, params=all_params) as response:
                 return await self._handle_response(response)
         elif method in ["POST", "DELETE"]:
-            if data:
-                params.update(data)
-            async with session.request(method, url, headers=headers, params=params) as response:
+            async with session.request(method, url, headers=headers, params=all_params) as response:
                 return await self._handle_response(response)
         else:
             raise ValueError(f"不支持的 HTTP 方法: {method}")
