@@ -12,6 +12,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Union
+from urllib.parse import urlencode
 
 import aiohttp
 import pandas as pd
@@ -424,68 +425,135 @@ class BinanceClient:
 
     async def get_open_interest_hist(self, symbol: str, period: str, limit: int = 500) -> pd.DataFrame:
         """
-        [修改] 获取合约持仓量历史 (支持分页)
-        Binance 单次限制 500 条。如果 limit > 500，自动分页。
+        获取合约持仓量历史 (支持分页)
+        
+        根据 Binance 文档:
+        - limit: default 30, max 500
+        - 仅支持最近1个月的数据
+        - 若无 startTime 和 endTime，默认返回当前时间往前的limit值
+        - IP限频: 1000次/5min
         """
         valid_periods = ["5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"]
         if period not in valid_periods:
             return pd.DataFrame()
 
-        # [重要修正] 使用正确的合约数据统计接口 URL
+        # 使用正确的合约数据统计接口 URL
         url = f"{self.api_url}/futures/data/openInterestHist"
 
         all_data = []
         current_end_time = None
+        # Binance 仅支持最近1个月的数据（约30天 = 2592000000 毫秒）
+        one_month_ms = 30 * 24 * 60 * 60 * 1000
+        earliest_allowed_time = int(time.time() * 1000) - one_month_ms
 
         # 保护机制：防止死循环，最多请求 10 次
         max_loops = (limit // 500) + 2
+        
+        # 尝试不同的limit值，从500开始，如果失败则降低
+        request_limits = [500, 300, 200, 100, 50]
+        request_limit = request_limits[0]
 
-        for _ in range(max_loops):
+        for loop_count in range(max_loops):
             if len(all_data) >= limit:
                 break
 
-            request_limit = 500
             params = {
                 'symbol': symbol,
                 'period': period,
                 'limit': request_limit
             }
+            # 如果设置了 endTime，确保不超过1个月限制
             if current_end_time:
+                # 如果 endTime 已经超过1个月限制，停止分页
+                if current_end_time < earliest_allowed_time:
+                    logger.warning(f"OI数据请求已超过1个月限制，停止分页。当前endTime: {current_end_time}, 最早允许: {earliest_allowed_time}")
+                    break
                 params['endTime'] = current_end_time
 
             try:
                 async with self.session.get(url, params=params) as response:
-                    response.raise_for_status()
+                    # 先检查状态码，获取详细错误信息
+                    if response.status != 200:
+                        error_text = await response.text()
+                        try:
+                            error_data = await response.json()
+                            error_msg = error_data.get('msg', error_text)
+                        except:
+                            error_msg = error_text
+                        
+                        # 如果是400错误且limit太大，尝试更小的limit
+                        if response.status == 400 and request_limit > 50:
+                            # 尝试下一个更小的limit
+                            limit_index = request_limits.index(request_limit)
+                            if limit_index < len(request_limits) - 1:
+                                request_limit = request_limits[limit_index + 1]
+                                logger.warning(f"获取OI失败，尝试更小的limit: {request_limit}, 错误: {error_msg}")
+                                continue
+                        
+                        logger.warning(f"获取OI分页失败: {response.status}, message='{error_msg}', url='{url}?{urlencode(params)}'")
+                        # 如果已经有数据，返回已有数据；否则返回空
+                        break
+                    
                     data = await response.json()
+                    
+                    # 检查返回的数据格式
+                    if not isinstance(data, list):
+                        logger.warning(f"获取OI返回数据格式异常: {type(data)}")
+                        break
 
                     if not data:
                         break
 
-                    if current_end_time is None:
-                        all_data = data + all_data
-                    else:
-                        all_data = data + all_data
+                    # 数据是按时间倒序返回的（最新的在前），所以需要插入到前面
+                    all_data = data + all_data
 
-                    first_timestamp = data[0]['timestamp']
-                    current_end_time = first_timestamp - 1
+                    # 检查数据是否有timestamp字段
+                    if not data or 'timestamp' not in data[0]:
+                        logger.warning(f"获取OI数据缺少timestamp字段")
+                        break
+                    
+                    # 获取最早的时间戳（数据是倒序的，最后一个是最早的）
+                    last_timestamp = data[-1]['timestamp']
+                    
+                    # 如果最早的时间戳已经超过1个月限制，停止分页
+                    if last_timestamp < earliest_allowed_time:
+                        logger.info(f"OI数据已到达1个月限制，停止分页")
+                        break
+                    
+                    # 使用最早的时间戳减1作为下次请求的endTime
+                    current_end_time = last_timestamp - 1
 
             except Exception as e:
                 logger.warning(f"获取OI分页失败: {e}")
+                # 如果已经有数据，继续处理；否则返回空
+                if not all_data:
+                    break
+                # 如果已经有部分数据，停止分页但返回已有数据
                 break
 
         if not all_data:
             return pd.DataFrame()
 
-        df = pd.DataFrame(all_data)
-        df.drop_duplicates(subset=['timestamp'], inplace=True)
-        df.sort_values('timestamp', inplace=True)
-        df = df.iloc[-limit:]
+        try:
+            df = pd.DataFrame(all_data)
+            if df.empty:
+                return pd.DataFrame()
+            
+            # 去重并排序（按时间正序）
+            df.drop_duplicates(subset=['timestamp'], inplace=True)
+            df.sort_values('timestamp', inplace=True)
+            
+            # 取最后limit条（最新的数据）
+            df = df.iloc[-limit:] if len(df) > limit else df
 
-        df['sumOpenInterest'] = df['sumOpenInterest'].astype(float)
-        df['sumOpenInterestValue'] = df['sumOpenInterestValue'].astype(float)
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df['sumOpenInterest'] = df['sumOpenInterest'].astype(float)
+            df['sumOpenInterestValue'] = df['sumOpenInterestValue'].astype(float)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-        return df[['timestamp', 'sumOpenInterestValue']]
+            return df[['timestamp', 'sumOpenInterestValue']]
+        except Exception as e:
+            logger.warning(f"处理OI数据失败: {e}")
+            return pd.DataFrame()
 
     async def get_funding_rate_history(self, symbol: str, limit: int = 100) -> pd.DataFrame:
         """获取资金费率历史 (无需复杂分页，100条覆盖很久)"""
