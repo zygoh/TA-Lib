@@ -242,16 +242,12 @@ async def format_account_summary(account_data: Dict[str, Any], positions_count: 
     total_unrealized_pnl = float(account_data.get("totalUnrealizedProfit", 0))
     
     equity = total_wallet_balance + total_unrealized_pnl
-    max_position_size = equity * safe_leverage
-    
-    balance_ratio = (available_balance / equity * 100) if equity > 0 else 0
     pnl_percent = (total_unrealized_pnl / total_wallet_balance * 100) if total_wallet_balance > 0 else 0
     margin_ratio = ((equity - available_balance) / equity * 100) if equity > 0 else 0
     
     max_position_size = equity * safe_leverage
     return (f"账户净值{equity:.2f} USDT（实际资金） | "
             f"最大可开仓金额{max_position_size:.2f} USDT（净值×{int(safe_leverage)}杠杆） | "
-            f"可用余额{available_balance:.2f} ({balance_ratio:.1f}%) | "
             f"盈亏{pnl_percent:+.2f}% | "
             f"保证金占用{margin_ratio:.1f}% | "
             f"持仓{positions_count}个")
