@@ -240,7 +240,7 @@ async def get_algo_orders(symbol: str = None) -> List[Dict]:
     params = {}
     if symbol:
         params['symbol'] = symbol
-    result = await _client._send_signed_request("GET", "/fapi/v1/algoOpenOrders", params)
+    result = await _client._send_signed_request("GET", "/fapi/v1/openAlgoOrders", params)
     return result if isinstance(result, list) else []
 
 async def format_account_summary(account_data: Dict[str, Any], positions_count: int) -> str:
