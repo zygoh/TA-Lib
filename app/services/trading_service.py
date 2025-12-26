@@ -240,7 +240,8 @@ async def get_algo_orders(symbol: str = None) -> List[Dict]:
     params = {}
     if symbol:
         params['symbol'] = symbol
-    return await _client._send_signed_request("GET", "/fapi/v1/algoOrder", params)
+    result = await _client._send_signed_request("GET", "/fapi/v1/algoOpenOrders", params)
+    return result if isinstance(result, list) else []
 
 async def format_account_summary(account_data: Dict[str, Any], positions_count: int) -> str:
     total_wallet_balance = float(account_data.get("totalWalletBalance", 0))
@@ -292,13 +293,18 @@ async def format_positions(positions_data: List[Dict[str, Any]], open_orders: Li
             elif o_type in ['TAKE_PROFIT_MARKET', 'TAKE_PROFIT']:
                 take_profit = stop_price
         
-        symbol_algo_orders = [o for o in algo_orders if o['symbol'] == symbol]
+        symbol_algo_orders = [o for o in algo_orders if o.get('symbol') == symbol]
         for order in symbol_algo_orders:
-            o_type = order.get('type')
+            algo_status = order.get('algoStatus', '')
+            if algo_status in ['CANCELED', 'EXPIRED']:
+                continue
+            
+            o_type = order.get('type') or order.get('orderType', '')
             trigger_price = float(order.get('triggerPrice', 0))
-            if o_type == 'STOP_MARKET':
+            
+            if o_type in ['STOP_MARKET', 'STOP']:
                 stop_loss = trigger_price
-            elif o_type == 'TAKE_PROFIT_MARKET':
+            elif o_type in ['TAKE_PROFIT_MARKET', 'TAKE_PROFIT']:
                 take_profit = trigger_price
 
         sl_str = f"{stop_loss:.4f}" if stop_loss else "未设置"
