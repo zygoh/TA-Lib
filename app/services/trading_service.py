@@ -236,6 +236,12 @@ async def get_open_orders(symbol: str = None) -> List[Dict]:
         params['symbol'] = symbol
     return await _client._send_signed_request("GET", "/fapi/v1/openOrders", params)
 
+async def get_algo_orders(symbol: str = None) -> List[Dict]:
+    params = {}
+    if symbol:
+        params['symbol'] = symbol
+    return await _client._send_signed_request("GET", "/fapi/v1/algoOrder", params)
+
 async def format_account_summary(account_data: Dict[str, Any], positions_count: int) -> str:
     total_wallet_balance = float(account_data.get("totalWalletBalance", 0))
     available_balance = float(account_data.get("availableBalance", 0))
@@ -252,7 +258,7 @@ async def format_account_summary(account_data: Dict[str, Any], positions_count: 
             f"保证金占用{margin_ratio:.1f}% | "
             f"持仓{positions_count}个")
 
-async def format_positions(positions_data: List[Dict[str, Any]], open_orders: List[Dict]) -> List[Dict[str, Any]]:
+async def format_positions(positions_data: List[Dict[str, Any]], open_orders: List[Dict], algo_orders: List[Dict]) -> List[Dict[str, Any]]:
     formatted_positions = []
     
     for pos in positions_data:
@@ -285,6 +291,15 @@ async def format_positions(positions_data: List[Dict[str, Any]], open_orders: Li
                 stop_loss = stop_price
             elif o_type in ['TAKE_PROFIT_MARKET', 'TAKE_PROFIT']:
                 take_profit = stop_price
+        
+        symbol_algo_orders = [o for o in algo_orders if o['symbol'] == symbol]
+        for order in symbol_algo_orders:
+            o_type = order.get('type')
+            trigger_price = float(order.get('triggerPrice', 0))
+            if o_type == 'STOP_MARKET':
+                stop_loss = trigger_price
+            elif o_type == 'TAKE_PROFIT_MARKET':
+                take_profit = trigger_price
 
         sl_str = f"{stop_loss:.4f}" if stop_loss else "未设置"
         tp_str = f"{take_profit:.4f}" if take_profit else "未设置"
@@ -326,8 +341,14 @@ async def get_positions() -> List[Dict[str, Any]]:
     except Exception as e:
         logger.warning(f"获取挂单失败: {e}")
         all_open_orders = []
+    
+    try:
+        all_algo_orders = await get_algo_orders()
+    except Exception as e:
+        logger.warning(f"获取Algo条件单失败: {e}")
+        all_algo_orders = []
 
-    return await format_positions(active_positions, all_open_orders)
+    return await format_positions(active_positions, all_open_orders, all_algo_orders)
 
 async def get_account_position_mode() -> str:
     """获取账户持仓模式：ONE_WAY_MODE 或 HEDGE_MODE"""
