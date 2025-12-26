@@ -636,13 +636,14 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
                 "symbol": symbol,
                 "side": side,
                 "type": "MARKET",
-                "quantity": amt,
-                "reduceOnly": "true"
+                "quantity": amt
             }
             
             if position_mode == "HEDGE_MODE":
                 position_side = "LONG" if is_long else "SHORT"
                 close_order_data["positionSide"] = position_side
+            else:
+                close_order_data["reduceOnly"] = "true"
             
             await _client._send_signed_request("POST", "/fapi/v1/order", data=close_order_data)
             return {"status": "success", "msg": "已平仓"}
