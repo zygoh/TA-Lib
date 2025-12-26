@@ -196,6 +196,14 @@ def round_step_size(quantity: float, step_size: float) -> float:
     step = decimal.Decimal(str(step_size))
     return float((qty // step) * step)
 
+def round_tick_size(price: float, tick_size: float) -> float:
+    """根据 tickSize 精度要求舍入价格（使用 Decimal 避免浮点精度问题）"""
+    if tick_size <= 0:
+        return price
+    price_decimal = decimal.Decimal(str(price))
+    tick = decimal.Decimal(str(tick_size))
+    return float((price_decimal // tick) * tick)
+
 # --- 业务计算逻辑 (参考 Go 架构) ---
 
 def calculate_position_limits(equity: float, is_btc_eth: bool) -> Tuple[float, float]:
@@ -469,7 +477,11 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
             tp_price = signal.get("take_profit")
             close_side = "SELL" if side == "BUY" else "BUY"
             
+            # 获取价格精度并调整止损/止盈价格
+            tick_size = exchange_info['tickSize']
+            
             if sl_price:
+                sl_price = round_tick_size(sl_price, tick_size)
                 sl_order_data = {
                     "algoType": "CONDITIONAL",
                     "symbol": symbol,
@@ -485,6 +497,7 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
                 await _client._send_signed_request("POST", "/fapi/v1/algoOrder", data=sl_order_data)
             
             if tp_price:
+                tp_price = round_tick_size(tp_price, tick_size)
                 tp_order_data = {
                     "algoType": "CONDITIONAL",
                     "symbol": symbol,
@@ -523,10 +536,15 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
             
             position_mode = await get_account_position_mode()
             
+            # 获取价格精度并调整止损/止盈价格
+            exchange_info = await _client.get_exchange_info(symbol)
+            tick_size = exchange_info['tickSize']
+            
             sl_price = signal.get("stop_loss")
             tp_price = signal.get("take_profit")
             
             if sl_price:
+                sl_price = round_tick_size(sl_price, tick_size)
                 sl_order_data = {
                     "algoType": "CONDITIONAL",
                     "symbol": symbol,
@@ -542,6 +560,7 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
                 await _client._send_signed_request("POST", "/fapi/v1/algoOrder", data=sl_order_data)
             
             if tp_price:
+                tp_price = round_tick_size(tp_price, tick_size)
                 tp_order_data = {
                     "algoType": "CONDITIONAL",
                     "symbol": symbol,
