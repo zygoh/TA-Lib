@@ -605,34 +605,47 @@ async def execute_trade(signal: Dict[str, Any]) -> Dict[str, Any]:
                 await _client._send_signed_request("DELETE", "/fapi/v1/allOpenOrders", params={"symbol": symbol})
             except Exception:
                 pass
+            try:
+                await _client._send_signed_request("DELETE", "/fapi/v1/algoOpenOrders", params={"symbol": symbol})
+            except Exception:
+                pass
             
             risk_data = await _client._send_signed_request("GET", "/fapi/v2/positionRisk", params={"symbol": symbol})
-            position_info = risk_data[0] if risk_data else {}
-            amt = abs(float(position_info.get("positionAmt", 0)))
+            if not risk_data or not isinstance(risk_data, list) or len(risk_data) == 0:
+                return {"status": "skipped", "msg": "当前无持仓"}
             
-            if amt > 0:
-                exchange_info = await _client.get_exchange_info(symbol)
-                step_size = exchange_info['stepSize']
-                amt = round_step_size(amt, step_size)
-                
-                side = "SELL" if "long" in action else "BUY"
-                position_mode = await get_account_position_mode()
-                
-                close_order_data = {
-                    "symbol": symbol,
-                    "side": side,
-                    "type": "MARKET",
-                    "quantity": amt,
-                    "reduceOnly": "true"
-                }
-                
-                if position_mode == "HEDGE_MODE":
-                    position_side = "LONG" if float(position_info.get("positionAmt", 0)) > 0 else "SHORT"
-                    close_order_data["positionSide"] = position_side
-                
-                await _client._send_signed_request("POST", "/fapi/v1/order", data=close_order_data)
-                return {"status": "success", "msg": "已平仓"}
-            return {"status": "skipped", "msg": "当前无持仓"}
+            position_info = risk_data[0]
+            position_amt = float(position_info.get("positionAmt", 0))
+            
+            if abs(position_amt) == 0:
+                return {"status": "skipped", "msg": "当前无持仓"}
+            
+            is_long = position_amt > 0
+            if (action == "close_long" and not is_long) or (action == "close_short" and is_long):
+                return {"status": "skipped", "msg": f"当前持仓方向不匹配，无法平仓"}
+            
+            exchange_info = await _client.get_exchange_info(symbol)
+            step_size = exchange_info['stepSize']
+            amt = abs(position_amt)
+            amt = round_step_size(amt, step_size)
+            
+            side = "SELL" if is_long else "BUY"
+            position_mode = await get_account_position_mode()
+            
+            close_order_data = {
+                "symbol": symbol,
+                "side": side,
+                "type": "MARKET",
+                "quantity": amt,
+                "reduceOnly": "true"
+            }
+            
+            if position_mode == "HEDGE_MODE":
+                position_side = "LONG" if is_long else "SHORT"
+                close_order_data["positionSide"] = position_side
+            
+            await _client._send_signed_request("POST", "/fapi/v1/order", data=close_order_data)
+            return {"status": "success", "msg": "已平仓"}
 
         else:
             return {"status": "error", "msg": f"未知动作: {action}"}
