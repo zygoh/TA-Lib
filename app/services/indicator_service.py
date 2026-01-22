@@ -764,6 +764,8 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
         try:
             interval_delta = interval_to_timedelta(interval)
             result_df['close_ts'] = result_df['temp_ts'] + interval_delta
+            # 确保时间精度一致（转换为毫秒精度，与OI数据匹配）
+            result_df['close_ts'] = result_df['close_ts'].astype('datetime64[ms]')
             logger.debug(f"✅ 计算Close Time成功: interval={interval}, delta={interval_delta}")
         except ValueError as e:
             logger.error(f"❌ 时间间隔转换失败: {e}")
