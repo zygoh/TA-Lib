@@ -68,6 +68,138 @@ def round_float(val: Union[float, int, None], precision: int = 8) -> Union[float
     except Exception:
         return val
 
+
+def interval_to_timedelta(interval: str) -> pd.Timedelta:
+    """
+    将币安时间间隔字符串转换为pandas Timedelta对象
+    
+    Args:
+        interval: 时间间隔字符串，如 '15m', '1h', '4h', '1d'
+    
+    Returns:
+        pd.Timedelta对象，表示该时间间隔的时长
+    
+    Raises:
+        ValueError: 当提供不支持的时间间隔时
+    
+    Examples:
+        >>> interval_to_timedelta("15m")
+        Timedelta('0 days 00:15:00')
+        >>> interval_to_timedelta("1h")
+        Timedelta('0 days 01:00:00')
+        >>> interval_to_timedelta("1d")
+        Timedelta('1 days 00:00:00')
+    """
+    INTERVAL_MAP = {
+        "1m": pd.Timedelta(minutes=1),
+        "5m": pd.Timedelta(minutes=5),
+        "15m": pd.Timedelta(minutes=15),
+        "30m": pd.Timedelta(minutes=30),
+        "1h": pd.Timedelta(hours=1),
+        "2h": pd.Timedelta(hours=2),
+        "4h": pd.Timedelta(hours=4),
+        "6h": pd.Timedelta(hours=6),
+        "8h": pd.Timedelta(hours=8),
+        "12h": pd.Timedelta(hours=12),
+        "1d": pd.Timedelta(days=1),
+    }
+    
+    if interval not in INTERVAL_MAP:
+        raise ValueError(f"不支持的时间间隔: {interval}. 支持的间隔: {list(INTERVAL_MAP.keys())}")
+    
+    return INTERVAL_MAP[interval]
+
+
+def validate_output_data_alignment(final_data: Dict[str, List], expected_length: int) -> None:
+    """
+    验证输出数据的所有列长度一致性
+    
+    Args:
+        final_data: 最终输出的数据字典，key为列名，value为数据列表
+        expected_length: 期望的数据长度（通常为DataFrame的行数）
+    
+    Raises:
+        ValueError: 如果发现任何列的长度与期望长度不一致
+    
+    Examples:
+        >>> data = {'a': [1, 2, 3], 'b': [4, 5, 6]}
+        >>> validate_output_data_alignment(data, 3)  # 通过，不抛异常
+        
+        >>> data = {'a': [1, 2, 3], 'b': [4, 5]}
+        >>> validate_output_data_alignment(data, 3)  # 抛出ValueError
+    """
+    mismatched_columns = []
+    
+    for col_name, col_data in final_data.items():
+        if isinstance(col_data, list):
+            actual_length = len(col_data)
+            if actual_length != expected_length:
+                mismatched_columns.append({
+                    'column': col_name,
+                    'expected': expected_length,
+                    'actual': actual_length,
+                    'diff': actual_length - expected_length
+                })
+    
+    if mismatched_columns:
+        error_details = '\n'.join([
+            f"  - {m['column']}: 期望{m['expected']}, 实际{m['actual']}, 差异{m['diff']}"
+            for m in mismatched_columns
+        ])
+        raise ValueError(
+            f"❌ 数据对齐验证失败，发现{len(mismatched_columns)}个列长度不一致:\n{error_details}"
+        )
+
+
+def calculate_oi_data_info(oi_series: pd.Series, total_bars: int) -> Dict[str, Any]:
+    """
+    计算OI（持仓量）数据的有效性信息
+    
+    由于币安API限制，OI数据只能获取最近30天。对于长周期数据（如1d周期500条），
+    前面大部分数据的OI会被填充为0。此函数用于标识哪些数据是真实的OI，哪些是填充的0。
+    
+    Args:
+        oi_series: OI数据序列（pandas Series）
+        total_bars: 总K线数量
+    
+    Returns:
+        包含以下字段的字典:
+        - total_bars: 总K线数量
+        - oi_valid_bars: 有效OI数据的数量
+        - oi_valid_from_index: 有效OI数据的起始索引
+        - oi_coverage_percent: OI数据覆盖率（百分比）
+    
+    Examples:
+        >>> oi = pd.Series([100, 200, 300])
+        >>> calculate_oi_data_info(oi, 3)
+        {'total_bars': 3, 'oi_valid_bars': 3, 'oi_valid_from_index': 0, 'oi_coverage_percent': 100.0}
+        
+        >>> oi = pd.Series([0, 0, 100, 200])
+        >>> calculate_oi_data_info(oi, 4)
+        {'total_bars': 4, 'oi_valid_bars': 2, 'oi_valid_from_index': 2, 'oi_coverage_percent': 50.0}
+    """
+    # 找到第一个非0且非NaN的索引
+    valid_mask = (oi_series != 0) & (~oi_series.isna())
+    
+    if valid_mask.any():
+        # 找到第一个有效值的位置
+        first_valid_idx = valid_mask.idxmax()
+        valid_bars = total_bars - first_valid_idx
+        coverage_percent = (valid_bars / total_bars) * 100 if total_bars > 0 else 0.0
+    else:
+        # 全部无效
+        first_valid_idx = total_bars
+        valid_bars = 0
+        coverage_percent = 0.0
+    
+    return {
+        "total_bars": int(total_bars),
+        "oi_valid_bars": int(valid_bars),
+        "oi_valid_from_index": int(first_valid_idx),
+        "oi_coverage_percent": round(float(coverage_percent), 2)
+    }
+
+
 class TechnicalIndicators:
     """技术指标计算类 - 使用TA-Lib库"""
 
@@ -624,8 +756,18 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
         if 'atr' in indicators_data:
             result_df['atr'] = indicators_data['atr']
 
-        # --- [关键修复] 动态设置 Tolerance ---
+        # --- [关键修复1] 计算K线的Close Time用于OI数据对齐 ---
+        # 问题：币安K线的timestamp是Open Time，但OI数据应该对齐到收盘时刻
+        # 解决：计算 Close Time = Open Time + Interval
         result_df['temp_ts'] = pd.to_datetime(result_df['t'], unit='ms')
+        
+        try:
+            interval_delta = interval_to_timedelta(interval)
+            result_df['close_ts'] = result_df['temp_ts'] + interval_delta
+            logger.debug(f"✅ 计算Close Time成功: interval={interval}, delta={interval_delta}")
+        except ValueError as e:
+            logger.error(f"❌ 时间间隔转换失败: {e}")
+            raise
 
         if not oi_df.empty:
             oi_df.set_index('timestamp', inplace=True)
@@ -644,7 +786,7 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
             result_df = pd.merge_asof(
                 result_df,
                 oi_df[['sumOpenInterestValue']],
-                left_on='temp_ts',
+                left_on='close_ts',  # [修复] 使用Close Time而非Open Time
                 right_index=True,
                 direction='backward',
                 tolerance=tolerance
@@ -661,7 +803,7 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
             result_df = pd.merge_asof(
                 result_df,
                 fr_df[['fundingRate']],
-                left_on='temp_ts',
+                left_on='close_ts',  # [修复] 统一使用Close Time
                 right_index=True,
                 direction='backward',
                 tolerance=pd.Timedelta('24h')
@@ -671,7 +813,7 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
         else:
             result_df['funding'] = 0
 
-        # 清理临时列
+        # 清理临时列（保留close_ts用于后续验证）
         if 'temp_ts' in result_df.columns:
             result_df.drop(columns=['temp_ts'], inplace=True)
 
@@ -716,7 +858,44 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
         for k in keys_to_remove:
             del final_data[k]
 
+        # --- [关键修复2] 数据完整性验证 ---
+        expected_length = len(result_df)
+        try:
+            validate_output_data_alignment(final_data, expected_length)
+            logger.debug(f"✅ 数据对齐验证通过: {len(final_data)}列, 每列{expected_length}行")
+        except ValueError as e:
+            logger.error(f"❌ 数据对齐验证失败: {e}")
+            raise
+
+        # --- [关键修复3] 计算OI数据有效性信息 ---
+        oi_data_info = None
+        if 'oi' in final_data and 'oi' in result_df.columns:
+            oi_series = result_df['oi']
+            oi_data_info = calculate_oi_data_info(oi_series, expected_length)
+            
+            # 如果覆盖率 < 50%，记录警告
+            if oi_data_info['oi_coverage_percent'] < 50:
+                logger.warning(
+                    f"⚠️ OI数据覆盖率较低: {oi_data_info['oi_coverage_percent']:.1f}% "
+                    f"({oi_data_info['oi_valid_bars']}/{oi_data_info['total_bars']}条有效) "
+                    f"- {symbol} {interval}"
+                )
+            else:
+                logger.debug(
+                    f"✅ OI数据覆盖率: {oi_data_info['oi_coverage_percent']:.1f}% "
+                    f"({oi_data_info['oi_valid_bars']}/{oi_data_info['total_bars']}条有效)"
+                )
+
+        # 清理close_ts列（验证完成后）
+        if 'close_ts' in result_df.columns:
+            result_df.drop(columns=['close_ts'], inplace=True)
+
         result = {'indicators': final_data}
+        
+        # 添加OI数据信息（如果存在）
+        if oi_data_info:
+            result['oi_data_info'] = oi_data_info
+        
         if 'fibonacci_retracement' in indicators_data:
             result['fibonacci'] = indicators_data['fibonacci_retracement']
 
