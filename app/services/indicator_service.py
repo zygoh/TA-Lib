@@ -547,7 +547,8 @@ class BinanceClient:
                         if last_close_time >= current_time_ms:
                             df = df.iloc[:-1]
 
-                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    # 统一时间精度为毫秒，确保跨版本兼容
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').astype('datetime64[ms]')
                     return df
             except Exception as e:
                 if attempt < _config["retry_attempts"] - 1:
@@ -680,7 +681,8 @@ class BinanceClient:
 
             df['sumOpenInterest'] = df['sumOpenInterest'].astype(float)
             df['sumOpenInterestValue'] = df['sumOpenInterestValue'].astype(float)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            # 统一时间精度为毫秒，确保跨版本兼容
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').astype('datetime64[ms]')
 
             return df[['timestamp', 'sumOpenInterestValue']]
         except Exception as e:
@@ -699,7 +701,8 @@ class BinanceClient:
                 if df.empty: return pd.DataFrame()
 
                 df['fundingRate'] = df['fundingRate'].astype(float)
-                df['fundingTime'] = pd.to_datetime(df['fundingTime'], unit='ms')
+                # 统一时间精度为毫秒，确保跨版本兼容
+                df['fundingTime'] = pd.to_datetime(df['fundingTime'], unit='ms').astype('datetime64[ms]')
                 return df[['fundingTime', 'fundingRate']]
         except Exception:
             return pd.DataFrame()
