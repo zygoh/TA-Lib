@@ -850,6 +850,12 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
         if filter_cols:
             result_df = result_df.dropna(subset=filter_cols)
 
+        # 清理临时列（在转换为final_data之前）
+        temp_columns = ['close_ts']
+        for temp_col in temp_columns:
+            if temp_col in result_df.columns:
+                result_df.drop(columns=[temp_col], inplace=True)
+
         final_data = {}
         for col in result_df.columns:
             series = result_df[col]
@@ -890,10 +896,6 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
                     f"✅ OI数据覆盖率: {oi_data_info['oi_coverage_percent']:.1f}% "
                     f"({oi_data_info['oi_valid_bars']}/{oi_data_info['total_bars']}条有效)"
                 )
-
-        # 清理close_ts列（验证完成后）
-        if 'close_ts' in result_df.columns:
-            result_df.drop(columns=['close_ts'], inplace=True)
 
         result = {'indicators': final_data}
         
