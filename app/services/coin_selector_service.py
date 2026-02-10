@@ -1,10 +1,8 @@
 """
-选币服务 - 从币安期货USDT永续合约中筛选综合评分最高的交易对
+选币服务 - 两阶段筛选：流动性初筛 + K线趋势延续性确认
 
-评分模型：三维度加权
-- 24小时成交量百分位排名 × 0.4
-- 24小时价格变化率绝对值百分位排名 × 0.3
-- 24小时成交额百分位排名 × 0.3
+第一阶段：从 ticker 24hr 按成交额排名筛出 Top N 候选（确保流动性）
+第二阶段：对候选币拉最近 3 根 4H K线，计算趋势延续性评分，选出趋势最明确的币
 
 缓存策略：内存缓存 + 4小时定时更新（UTC 0:01, 4:01, 8:01, 12:01, 16:01, 20:01）
 """
@@ -58,11 +56,12 @@ EXCLUDED_SYMBOLS: set = {
 UPDATE_INTERVAL_HOURS: int = 4
 UPDATE_OFFSET_MINUTES: int = 1
 
-# 评分权重（方案A：趋势强度优先）
-W_QUOTE_VOLUME: float = 0.35   # 成交额 — 确保流动性
-W_TREND: float = 0.30          # 趋势强度 — AI 方向判断核心
-W_VOLUME: float = 0.20         # 成交量 — 交易活跃度
-W_VOLATILITY: float = 0.15     # 波动率 — 辅助参考
+# 第一阶段：成交额 Top N 进入候选
+TOP_N_CANDIDATES: int = 10
+
+# 第二阶段：K线趋势确认参数
+KLINE_INTERVAL: str = "2h"
+KLINE_COUNT: int = 3
 
 
 # ── 数据结构 ──────────────────────────────────────────────────────────────────
@@ -82,12 +81,9 @@ class CoinScore:
 class CoinSelectorService:
     """选币服务核心类
 
-    职责：
-    1. 从币安获取24小时行情数据
-    2. 过滤排除币种
-    3. 三维度加权评分
-    4. 缓存最高分币种
-    5. 后台定时更新
+    两阶段选币流程：
+    1. ticker 成交额排名 → Top N 候选（流动性保障）
+    2. 4H K线趋势延续性评分 → 选出趋势最明确的币
     """
 
     def __init__(self) -> None:
@@ -122,7 +118,7 @@ class CoinSelectorService:
     # ── 缓存读取 ──────────────────────────────────────────────────────────
 
     async def get_cached_result(self) -> Optional[CoinScore]:
-        """获取缓存的选币结果（线程安全）"""
+        """获取缓存的选币结果"""
         return self._cache
 
     # ── 数据获取 ──────────────────────────────────────────────────────────
@@ -135,7 +131,7 @@ class CoinSelectorService:
         - status == "TRADING"（排除已下架币种）
 
         Returns:
-            活跃永续合约符号集合，如 {"BTCUSDT", "ETHUSDT", ...}
+            活跃永续合约符号集合
         """
         url = f"{_config['binance_api_url']}/fapi/v1/exchangeInfo"
         session = await self._get_session()
@@ -164,7 +160,6 @@ class CoinSelectorService:
             行情数据列表
 
         Raises:
-            aiohttp.ClientError: 网络请求失败
             Exception: API 返回非 200 状态码
         """
         url = f"{_config['binance_api_url']}/fapi/v1/ticker/24hr"
@@ -174,6 +169,32 @@ class CoinSelectorService:
                 text = await response.text()
                 raise Exception(f"币安 API 返回 {response.status}: {text}")
             data: List[Dict[str, Any]] = await response.json()
+            return data
+
+    async def _fetch_klines(self, symbol: str) -> List[List[Any]]:
+        """获取指定交易对的最近 K 线数据
+
+        Args:
+            symbol: 交易对符号
+
+        Returns:
+            K线数据列表，每根K线格式: [open_time, open, high, low, close, volume, ...]
+
+        Raises:
+            Exception: API 请求失败
+        """
+        url = f"{_config['binance_api_url']}/fapi/v1/klines"
+        params: Dict[str, Any] = {
+            "symbol": symbol,
+            "interval": KLINE_INTERVAL,
+            "limit": KLINE_COUNT + 1,  # 多取一根，最后一根可能未收盘
+        }
+        session = await self._get_session()
+        async with session.get(url, params=params) as response:
+            if response.status != 200:
+                text = await response.text()
+                raise Exception(f"获取 {symbol} K线失败 {response.status}: {text}")
+            data: List[List[Any]] = await response.json()
             return data
 
     # ── 过滤逻辑 ──────────────────────────────────────────────────────────
@@ -186,12 +207,13 @@ class CoinSelectorService:
         """过滤排除币种，仅保留活跃的 USDT 永续合约
 
         过滤规则：
-        1. 必须在 active_perpetual_symbols 白名单中（确保是在线永续合约）
+        1. 必须在 active_perpetual_symbols 白名单中（在线永续合约）
         2. 不在 EXCLUDED_SYMBOLS 黑名单中
+        3. 基础数据有效（成交额 > 0）
 
         Args:
             tickers: 原始行情数据列表
-            active_perpetual_symbols: 从 exchangeInfo 获取的活跃永续合约符号集合
+            active_perpetual_symbols: 活跃永续合约符号集合
 
         Returns:
             过滤后的行情数据列表
@@ -203,113 +225,144 @@ class CoinSelectorService:
                 symbol in active_perpetual_symbols
                 and symbol not in EXCLUDED_SYMBOLS
             ):
-                filtered.append(ticker)
+                try:
+                    quote_volume = float(ticker.get("quoteVolume", 0))
+                    if quote_volume > 0:
+                        filtered.append(ticker)
+                except (ValueError, TypeError):
+                    continue
         return filtered
 
-    # ── 评分计算 ──────────────────────────────────────────────────────────
+    # ── 第一阶段：成交额排名初筛 ─────────────────────────────────────────
 
     @staticmethod
-    def _percentile_rank(values: List[float]) -> List[float]:
-        """计算百分位排名（0-100）
-
-        Args:
-            values: 数值列表
-
-        Returns:
-            对应的百分位排名列表
-        """
-        n = len(values)
-        if n <= 1:
-            return [50.0] * n
-        sorted_indices = sorted(range(n), key=lambda i: values[i])
-        ranks: List[float] = [0.0] * n
-        for rank, idx in enumerate(sorted_indices):
-            ranks[idx] = (rank / (n - 1)) * 100
-        return ranks
-
-    @staticmethod
-    def _calculate_scores(tickers: List[Dict[str, Any]]) -> List[CoinScore]:
-        """计算所有候选币种的综合评分（趋势强度优先）
-
-        评分公式：
-        Score = 0.35 × 成交额排名 + 0.30 × 趋势强度排名 + 0.20 × 成交量排名 + 0.15 × 波动率排名
-
-        趋势强度：priceChangePercent 绝对值越大，趋势越明确，AI 越容易判断方向
+    def _select_top_candidates(
+        tickers: List[Dict[str, Any]],
+        top_n: int = TOP_N_CANDIDATES,
+    ) -> List[Dict[str, Any]]:
+        """按24小时成交额降序排列，取 Top N 候选
 
         Args:
             tickers: 过滤后的行情数据列表
+            top_n: 候选数量
 
         Returns:
-            评分结果列表（按 score 降序排列）
+            成交额 Top N 的行情数据列表
         """
-        if not tickers:
-            return []
+        sorted_tickers = sorted(
+            tickers,
+            key=lambda t: float(t.get("quoteVolume", 0)),
+            reverse=True,
+        )
+        return sorted_tickers[:top_n]
 
-        # 提取有效数据，跳过异常交易对
-        valid_tickers: List[Dict[str, Any]] = []
-        for t in tickers:
-            try:
-                volume = float(t.get("volume", 0))
-                quote_volume = float(t.get("quoteVolume", 0))
-                price = float(t.get("lastPrice", 0))
-                _ = float(t.get("priceChangePercent", 0))
-                if volume > 0 and quote_volume > 0 and price > 0:
-                    valid_tickers.append(t)
-            except (ValueError, TypeError):
-                continue
+    # ── 第二阶段：K线趋势延续性评分 ──────────────────────────────────────
 
-        if not valid_tickers:
-            return []
+    @staticmethod
+    def _calculate_trend_score(klines: List[List[Any]]) -> float:
+        """基于最近已收盘的 K 线计算趋势延续性评分
 
-        # 提取四个维度的数值
-        quote_volumes: List[float] = [float(t["quoteVolume"]) for t in valid_tickers]
-        trend_strengths: List[float] = [abs(float(t["priceChangePercent"])) for t in valid_tickers]
-        volumes: List[float] = [float(t["volume"]) for t in valid_tickers]
-        # 波动率用 (high - low) / lastPrice 近似，ticker 接口有 highPrice/lowPrice
-        volatilities: List[float] = []
-        for t in valid_tickers:
-            high = float(t.get("highPrice", 0))
-            low = float(t.get("lowPrice", 0))
-            last = float(t["lastPrice"])
-            volatilities.append((high - low) / last * 100 if last > 0 else 0.0)
+        评分维度（满分 100）：
+        1. 方向一致性（40分）：最近 N 根K线收盘方向是否一致（全阳/全阴）
+        2. 收盘价递进（30分）：收盘价是否持续创新高/新低
+        3. 实体占比（30分）：K线实体占整根K线的比例（实体大 = 趋势坚决，影线小）
 
-        # 计算百分位排名
-        quote_volume_ranks = CoinSelectorService._percentile_rank(quote_volumes)
-        trend_ranks = CoinSelectorService._percentile_rank(trend_strengths)
-        volume_ranks = CoinSelectorService._percentile_rank(volumes)
-        volatility_ranks = CoinSelectorService._percentile_rank(volatilities)
+        Args:
+            klines: K线数据列表 [open_time, open, high, low, close, volume, ...]
 
-        # 加权评分
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-        results: List[CoinScore] = []
-        for i, t in enumerate(valid_tickers):
-            score = (
-                W_QUOTE_VOLUME * quote_volume_ranks[i]
-                + W_TREND * trend_ranks[i]
-                + W_VOLUME * volume_ranks[i]
-                + W_VOLATILITY * volatility_ranks[i]
-            )
-            results.append(CoinScore(
-                symbol=t["symbol"],
-                score=round(score, 2),
-                price=round(float(t["lastPrice"]), 10),
-                change_24h=round(float(t["priceChangePercent"]), 2),
-                updated_at=now_str,
-            ))
+        Returns:
+            趋势延续性评分 0-100
+        """
+        if len(klines) < 2:
+            return 0.0
 
-        # 按 score 降序排列
-        results.sort(key=lambda x: x.score, reverse=True)
-        return results
+        # 取最近 KLINE_COUNT 根已收盘的K线（排除最后一根可能未收盘的）
+        # 判断最后一根是否已收盘：close_time < 当前时间
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        closed_klines: List[List[Any]] = []
+        for k in klines:
+            close_time = int(k[6])  # index 6 = close_time
+            if close_time < now_ms:
+                closed_klines.append(k)
+
+        if len(closed_klines) < KLINE_COUNT:
+            # 不够指定数量的已收盘K线，用所有已收盘的
+            if len(closed_klines) < 2:
+                return 0.0
+
+        # 取最后 KLINE_COUNT 根
+        recent = closed_klines[-KLINE_COUNT:]
+
+        # 提取 open/close
+        opens: List[float] = [float(k[1]) for k in recent]
+        closes: List[float] = [float(k[4]) for k in recent]
+        highs: List[float] = [float(k[2]) for k in recent]
+        lows: List[float] = [float(k[3]) for k in recent]
+
+        # ── 1. 方向一致性（40分）──
+        directions: List[int] = []
+        for o, c in zip(opens, closes):
+            if c > o:
+                directions.append(1)   # 阳线
+            elif c < o:
+                directions.append(-1)  # 阴线
+            else:
+                directions.append(0)   # 十字星
+
+        # 全部同方向 = 满分，有一根不同 = 按比例扣分
+        non_zero = [d for d in directions if d != 0]
+        if not non_zero:
+            direction_score = 0.0
+        else:
+            dominant = max(set(non_zero), key=non_zero.count)
+            consistency = sum(1 for d in non_zero if d == dominant) / len(directions)
+            direction_score = consistency * 40.0
+
+        # ── 2. 收盘价递进（30分）──
+        # 检查收盘价是否单调递增或单调递减
+        increasing = all(closes[i] >= closes[i - 1] for i in range(1, len(closes)))
+        decreasing = all(closes[i] <= closes[i - 1] for i in range(1, len(closes)))
+
+        if increasing or decreasing:
+            progression_score = 30.0
+        else:
+            # 部分递进：计算相邻K线中方向一致的比例
+            consistent_pairs = 0
+            for i in range(1, len(closes)):
+                diff_curr = closes[i] - closes[i - 1]
+                if non_zero and (
+                    (non_zero[0] > 0 and diff_curr >= 0)
+                    or (non_zero[0] < 0 and diff_curr <= 0)
+                ):
+                    consistent_pairs += 1
+            progression_score = (consistent_pairs / (len(closes) - 1)) * 30.0
+
+        # ── 3. 实体占比（30分）──
+        body_ratios: List[float] = []
+        for o, c, h, l in zip(opens, closes, highs, lows):
+            full_range = h - l
+            if full_range > 0:
+                body = abs(c - o)
+                body_ratios.append(body / full_range)
+            else:
+                body_ratios.append(0.0)
+
+        avg_body_ratio = sum(body_ratios) / len(body_ratios) if body_ratios else 0.0
+        body_score = avg_body_ratio * 30.0
+
+        total = direction_score + progression_score + body_score
+        return round(total, 2)
 
     # ── 选币主流程 ────────────────────────────────────────────────────────
 
     async def refresh(self) -> CoinScore:
-        """执行一次完整的选币流程
+        """执行两阶段选币流程
 
-        流程：获取行情 → 过滤 → 评分 → 缓存最高分
+        第一阶段：ticker 成交额 Top N 初筛
+        第二阶段：4H K线趋势延续性确认
 
         Returns:
-            最高分币种的评分结果
+            趋势延续性最强的币种评分结果
 
         Raises:
             Exception: 无法获取有效的选币结果
@@ -319,17 +372,46 @@ class CoinSelectorService:
                 # 获取活跃永续合约白名单
                 self._active_perpetual_symbols = await self._fetch_active_perpetual_symbols()
 
+                # 第一阶段：成交额初筛
                 tickers = await self._fetch_tickers()
                 filtered = self._filter_symbols(tickers, self._active_perpetual_symbols)
-                logger.info(f"📊 选币候选: {len(filtered)} 个交易对（已过滤 {len(tickers) - len(filtered)} 个）")
+                logger.info(f"📊 过滤后候选: {len(filtered)} 个（已排除 {len(tickers) - len(filtered)} 个）")
 
-                scores = self._calculate_scores(filtered)
-                if not scores:
-                    raise Exception("所有候选交易对评分失败，无有效结果")
+                candidates = self._select_top_candidates(filtered)
+                candidate_symbols = [t["symbol"] for t in candidates]
+                logger.info(f"📊 成交额 Top {len(candidates)}: {candidate_symbols}")
 
-                top = scores[0]
+                # 第二阶段：K线趋势延续性评分
+                now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+                scored: List[CoinScore] = []
+
+                for ticker in candidates:
+                    symbol = ticker["symbol"]
+                    try:
+                        klines = await self._fetch_klines(symbol)
+                        trend_score = self._calculate_trend_score(klines)
+                        scored.append(CoinScore(
+                            symbol=symbol,
+                            score=trend_score,
+                            price=round(float(ticker["lastPrice"]), 10),
+                            change_24h=round(float(ticker["priceChangePercent"]), 2),
+                            updated_at=now_str,
+                        ))
+                    except Exception as e:
+                        logger.warning(f"⚠️ {symbol} K线获取失败，跳过: {e}")
+                        continue
+
+                if not scored:
+                    raise Exception("所有候选交易对K线获取失败，无有效结果")
+
+                # 选趋势延续性最强的
+                scored.sort(key=lambda x: x.score, reverse=True)
+                top = scored[0]
                 self._cache = top
-                logger.info(f"✅ 选币完成: {top.symbol} | 评分 {top.score} | 价格 {top.price} | 24h变化 {top.change_24h}%")
+                logger.info(
+                    f"✅ 选币完成: {top.symbol} | 趋势评分 {top.score} | "
+                    f"价格 {top.price} | 24h变化 {top.change_24h}%"
+                )
                 return top
 
             except Exception as e:
@@ -385,14 +467,12 @@ class CoinSelectorService:
 
         启动时立即执行一次选币，确保缓存有数据可用。
         """
-        # 启动时立即执行一次，确保接口可用
         try:
             await self.refresh()
             logger.info("🚀 启动选币完成，缓存已就绪")
         except Exception as e:
             logger.error(f"❌ 启动选币失败: {e}")
 
-        # 启动后台定时循环
         self._background_task = asyncio.create_task(self._schedule_loop())
         logger.info("🚀 选币后台定时任务已启动")
 
