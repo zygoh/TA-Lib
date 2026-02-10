@@ -94,6 +94,7 @@ class CoinSelectorService:
         self._lock: asyncio.Lock = asyncio.Lock()
         self._session: Optional[aiohttp.ClientSession] = None
         self._background_task: Optional[asyncio.Task] = None
+        self._active_perpetual_symbols: Optional[set] = None
 
     # ── Session 管理 ──────────────────────────────────────────────────────
 
@@ -125,6 +126,36 @@ class CoinSelectorService:
 
     # ── 数据获取 ──────────────────────────────────────────────────────────
 
+    async def _fetch_active_perpetual_symbols(self) -> set:
+        """从 exchangeInfo 获取当前在线的 USDT 永续合约符号集合
+
+        过滤条件：
+        - contractType == "PERPETUAL"（永续合约）
+        - status == "TRADING"（排除已下架币种）
+
+        Returns:
+            活跃永续合约符号集合，如 {"BTCUSDT", "ETHUSDT", ...}
+        """
+        url = f"{_config['binance_api_url']}/fapi/v1/exchangeInfo"
+        session = await self._get_session()
+        async with session.get(url) as response:
+            if response.status != 200:
+                text = await response.text()
+                raise Exception(f"获取 exchangeInfo 失败 {response.status}: {text}")
+            data: Dict[str, Any] = await response.json()
+
+        active_symbols: set = set()
+        for symbol_info in data.get("symbols", []):
+            if (
+                symbol_info.get("contractType") == "PERPETUAL"
+                and symbol_info.get("status") == "TRADING"
+                and symbol_info.get("quoteAsset") == "USDT"
+            ):
+                active_symbols.add(symbol_info["symbol"])
+
+        logger.info(f"📊 活跃永续合约: {len(active_symbols)} 个")
+        return active_symbols
+
     async def _fetch_tickers(self) -> List[Dict[str, Any]]:
         """从币安获取所有交易对的24小时行情数据
 
@@ -147,11 +178,19 @@ class CoinSelectorService:
     # ── 过滤逻辑 ──────────────────────────────────────────────────────────
 
     @staticmethod
-    def _filter_symbols(tickers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """过滤排除币种，仅保留 USDT 永续合约
+    def _filter_symbols(
+        tickers: List[Dict[str, Any]],
+        active_perpetual_symbols: set,
+    ) -> List[Dict[str, Any]]:
+        """过滤排除币种，仅保留活跃的 USDT 永续合约
+
+        过滤规则：
+        1. 必须在 active_perpetual_symbols 白名单中（确保是在线永续合约）
+        2. 不在 EXCLUDED_SYMBOLS 黑名单中
 
         Args:
             tickers: 原始行情数据列表
+            active_perpetual_symbols: 从 exchangeInfo 获取的活跃永续合约符号集合
 
         Returns:
             过滤后的行情数据列表
@@ -159,8 +198,10 @@ class CoinSelectorService:
         filtered: List[Dict[str, Any]] = []
         for ticker in tickers:
             symbol: str = ticker.get("symbol", "")
-            # 仅保留 USDT 结尾的交易对，排除黑名单
-            if symbol.endswith("USDT") and symbol not in EXCLUDED_SYMBOLS:
+            if (
+                symbol in active_perpetual_symbols
+                and symbol not in EXCLUDED_SYMBOLS
+            ):
                 filtered.append(ticker)
         return filtered
 
@@ -262,8 +303,11 @@ class CoinSelectorService:
         """
         async with self._lock:
             try:
+                # 获取活跃永续合约白名单
+                self._active_perpetual_symbols = await self._fetch_active_perpetual_symbols()
+
                 tickers = await self._fetch_tickers()
-                filtered = self._filter_symbols(tickers)
+                filtered = self._filter_symbols(tickers, self._active_perpetual_symbols)
                 logger.info(f"📊 选币候选: {len(filtered)} 个交易对（已过滤 {len(tickers) - len(filtered)} 个）")
 
                 scores = self._calculate_scores(filtered)
