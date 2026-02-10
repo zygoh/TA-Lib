@@ -56,8 +56,8 @@ EXCLUDED_SYMBOLS: set = {
 UPDATE_INTERVAL_HOURS: int = 4
 UPDATE_OFFSET_MINUTES: int = 1
 
-# 第一阶段：成交额 Top N 进入候选
-TOP_N_CANDIDATES: int = 10
+# 第一阶段：流动性门槛（24小时成交额 >= 5000万 USDT）
+MIN_QUOTE_VOLUME_USDT: float = 50_000_000.0
 
 # 第二阶段：K线趋势确认参数
 KLINE_INTERVAL: str = "2h"
@@ -233,28 +233,27 @@ class CoinSelectorService:
                     continue
         return filtered
 
-    # ── 第一阶段：成交额排名初筛 ─────────────────────────────────────────
+    # ── 第一阶段：流动性门槛过滤 ─────────────────────────────────────────
 
     @staticmethod
-    def _select_top_candidates(
+    def _filter_by_liquidity(
         tickers: List[Dict[str, Any]],
-        top_n: int = TOP_N_CANDIDATES,
     ) -> List[Dict[str, Any]]:
-        """按24小时成交额降序排列，取 Top N 候选
+        """过滤掉24小时成交额低于门槛的交易对
+
+        所有成交额 >= MIN_QUOTE_VOLUME_USDT 的币种均为候选，
+        不做排名截断，避免 BTC/ETH 天然优势。
 
         Args:
             tickers: 过滤后的行情数据列表
-            top_n: 候选数量
 
         Returns:
-            成交额 Top N 的行情数据列表
+            流动性合格的行情数据列表
         """
-        sorted_tickers = sorted(
-            tickers,
-            key=lambda t: float(t.get("quoteVolume", 0)),
-            reverse=True,
-        )
-        return sorted_tickers[:top_n]
+        return [
+            t for t in tickers
+            if float(t.get("quoteVolume", 0)) >= MIN_QUOTE_VOLUME_USDT
+        ]
 
     # ── 第二阶段：K线趋势延续性评分 ──────────────────────────────────────
 
@@ -372,14 +371,14 @@ class CoinSelectorService:
                 # 获取活跃永续合约白名单
                 self._active_perpetual_symbols = await self._fetch_active_perpetual_symbols()
 
-                # 第一阶段：成交额初筛
+                # 第一阶段：流动性门槛过滤
                 tickers = await self._fetch_tickers()
                 filtered = self._filter_symbols(tickers, self._active_perpetual_symbols)
-                logger.info(f"📊 过滤后候选: {len(filtered)} 个（已排除 {len(tickers) - len(filtered)} 个）")
-
-                candidates = self._select_top_candidates(filtered)
-                candidate_symbols = [t["symbol"] for t in candidates]
-                logger.info(f"📊 成交额 Top {len(candidates)}: {candidate_symbols}")
+                candidates = self._filter_by_liquidity(filtered)
+                logger.info(
+                    f"📊 过滤后候选: {len(filtered)} 个 → 流动性合格: {len(candidates)} 个"
+                    f"（门槛 {MIN_QUOTE_VOLUME_USDT / 1_000_000:.0f}M USDT）"
+                )
 
                 # 第二阶段：K线趋势延续性评分
                 now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
