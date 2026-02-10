@@ -8,7 +8,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.models.schemas import HealthResponse
-from app.routers import indicators, images, trading
+from app.routers import indicators, images, trading, coin_selection
+from app.services.coin_selector_service import get_coin_selector_service
 
 # 配置日志 - 只输出到控制台
 logging.basicConfig(
@@ -42,6 +43,22 @@ app.add_middleware(
 app.include_router(indicators.router)
 app.include_router(images.router)
 app.include_router(trading.router)
+app.include_router(coin_selection.router)
+
+
+# 生命周期事件
+@app.on_event("startup")
+async def startup_event():
+    """启动时初始化选币服务（立即执行一次选币 + 启动后台定时任务）"""
+    service = await get_coin_selector_service()
+    await service.start_background_task()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """关闭时释放选币服务资源"""
+    service = await get_coin_selector_service()
+    await service.close()
 
 # 基础路由
 @app.get("/", response_model=HealthResponse)
