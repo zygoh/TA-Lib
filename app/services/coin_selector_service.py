@@ -58,10 +58,11 @@ EXCLUDED_SYMBOLS: set = {
 UPDATE_INTERVAL_HOURS: int = 4
 UPDATE_OFFSET_MINUTES: int = 1
 
-# 评分权重
-W_VOLUME: float = 0.4
-W_CHANGE: float = 0.3
-W_QUOTE_VOLUME: float = 0.3
+# 评分权重（方案A：趋势强度优先）
+W_QUOTE_VOLUME: float = 0.35   # 成交额 — 确保流动性
+W_TREND: float = 0.30          # 趋势强度 — AI 方向判断核心
+W_VOLUME: float = 0.20         # 成交量 — 交易活跃度
+W_VOLATILITY: float = 0.15     # 波动率 — 辅助参考
 
 
 # ── 数据结构 ──────────────────────────────────────────────────────────────────
@@ -228,9 +229,12 @@ class CoinSelectorService:
 
     @staticmethod
     def _calculate_scores(tickers: List[Dict[str, Any]]) -> List[CoinScore]:
-        """计算所有候选币种的综合评分
+        """计算所有候选币种的综合评分（趋势强度优先）
 
-        评分公式：Score = 0.4 × 成交量排名 + 0.3 × |价格变化率|排名 + 0.3 × 成交额排名
+        评分公式：
+        Score = 0.35 × 成交额排名 + 0.30 × 趋势强度排名 + 0.20 × 成交量排名 + 0.15 × 波动率排名
+
+        趋势强度：priceChangePercent 绝对值越大，趋势越明确，AI 越容易判断方向
 
         Args:
             tickers: 过滤后的行情数据列表
@@ -248,7 +252,7 @@ class CoinSelectorService:
                 volume = float(t.get("volume", 0))
                 quote_volume = float(t.get("quoteVolume", 0))
                 price = float(t.get("lastPrice", 0))
-                change_pct = float(t.get("priceChangePercent", 0))
+                _ = float(t.get("priceChangePercent", 0))
                 if volume > 0 and quote_volume > 0 and price > 0:
                     valid_tickers.append(t)
             except (ValueError, TypeError):
@@ -257,24 +261,33 @@ class CoinSelectorService:
         if not valid_tickers:
             return []
 
-        # 提取三个维度的数值
-        volumes: List[float] = [float(t["volume"]) for t in valid_tickers]
-        abs_changes: List[float] = [abs(float(t["priceChangePercent"])) for t in valid_tickers]
+        # 提取四个维度的数值
         quote_volumes: List[float] = [float(t["quoteVolume"]) for t in valid_tickers]
+        trend_strengths: List[float] = [abs(float(t["priceChangePercent"])) for t in valid_tickers]
+        volumes: List[float] = [float(t["volume"]) for t in valid_tickers]
+        # 波动率用 (high - low) / lastPrice 近似，ticker 接口有 highPrice/lowPrice
+        volatilities: List[float] = []
+        for t in valid_tickers:
+            high = float(t.get("highPrice", 0))
+            low = float(t.get("lowPrice", 0))
+            last = float(t["lastPrice"])
+            volatilities.append((high - low) / last * 100 if last > 0 else 0.0)
 
         # 计算百分位排名
-        volume_ranks = CoinSelectorService._percentile_rank(volumes)
-        change_ranks = CoinSelectorService._percentile_rank(abs_changes)
         quote_volume_ranks = CoinSelectorService._percentile_rank(quote_volumes)
+        trend_ranks = CoinSelectorService._percentile_rank(trend_strengths)
+        volume_ranks = CoinSelectorService._percentile_rank(volumes)
+        volatility_ranks = CoinSelectorService._percentile_rank(volatilities)
 
         # 加权评分
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         results: List[CoinScore] = []
         for i, t in enumerate(valid_tickers):
             score = (
-                W_VOLUME * volume_ranks[i]
-                + W_CHANGE * change_ranks[i]
-                + W_QUOTE_VOLUME * quote_volume_ranks[i]
+                W_QUOTE_VOLUME * quote_volume_ranks[i]
+                + W_TREND * trend_ranks[i]
+                + W_VOLUME * volume_ranks[i]
+                + W_VOLATILITY * volatility_ranks[i]
             )
             results.append(CoinScore(
                 symbol=t["symbol"],
