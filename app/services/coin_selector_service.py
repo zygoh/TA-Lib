@@ -4,7 +4,7 @@
 第一阶段：从 ticker 24hr 按成交额排名筛出 Top N 候选（确保流动性）
 第二阶段：对候选币拉最近 3 根 4H K线，计算趋势延续性评分，选出趋势最明确的币
 
-缓存策略：内存缓存 + 4小时定时更新（UTC 0:01, 4:01, 8:01, 12:01, 16:01, 20:01）
+缓存策略：内存缓存 + 2小时定时更新（UTC 0:01, 2:01, 4:01, ..., 22:01）
 """
 import asyncio
 import json
@@ -53,7 +53,7 @@ EXCLUDED_SYMBOLS: set = {
     "XAGUSDT", "XAUUSDT", "EURUSDT", "GBPUSDT", "JPYUSDT",
 }
 
-UPDATE_INTERVAL_HOURS: int = 4
+UPDATE_INTERVAL_HOURS: int = 2
 UPDATE_OFFSET_MINUTES: int = 1
 
 # 第一阶段：流动性门槛（24小时成交额 >= 5000万 USDT）
@@ -425,7 +425,7 @@ class CoinSelectorService:
     def _seconds_until_next_update() -> float:
         """计算距离下一个更新时间点的秒数
 
-        更新时间点（UTC）: 0:01, 4:01, 8:01, 12:01, 16:01, 20:01
+        更新时间点（UTC）: 0:01, 2:01, 4:01, ..., 22:01
 
         Returns:
             距下一个更新时间点的秒数（>= 0）
@@ -451,7 +451,7 @@ class CoinSelectorService:
         return max(delta, 0)
 
     async def _schedule_loop(self) -> None:
-        """后台调度循环：按4小时周期定时刷新选币结果"""
+        """后台调度循环：按2小时周期定时刷新选币结果"""
         while True:
             seconds_until_next = self._seconds_until_next_update()
             logger.info(f"🚀 下次选币更新在 {seconds_until_next:.0f} 秒后")
