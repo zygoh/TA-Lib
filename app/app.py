@@ -4,11 +4,14 @@
 """
 import logging
 from datetime import datetime
-from fastapi import FastAPI
+import io
+
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image, ImageDraw
 
 from app.models.schemas import HealthResponse
-from app.routers import indicators, images, trading
+from app.routers import indicators, images, trading, crypto_mcp
 
 # 配置日志 - 只输出到控制台
 logging.basicConfig(
@@ -42,6 +45,7 @@ app.add_middleware(
 app.include_router(indicators.router)
 app.include_router(images.router)
 app.include_router(trading.router)
+app.include_router(crypto_mcp.router)
 
 # 基础路由
 @app.get("/", response_model=HealthResponse)
@@ -61,3 +65,19 @@ async def health_check():
         timestamp=datetime.now().isoformat(),
         version="1.0.0"
     )
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """
+    返回站点 favicon（避免浏览器请求 404）。
+    运行时生成 32x32 ICO，无需额外静态文件。
+    """
+    size = 32
+    img = Image.new("RGBA", (size, size), (22, 33, 62, 255))  # 深色底
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([6, 6, size - 6, size - 6], fill=(38, 166, 154, 255))  # 亮色块
+
+    buf = io.BytesIO()
+    img.save(buf, format="ICO", sizes=[(size, size)])
+    return Response(content=buf.getvalue(), media_type="image/x-icon")
