@@ -11,12 +11,13 @@ services:
     env_file:
       - .env
     volumes:
-      - ./home/TA-Lib/data:/app/data
-      - ./home/TA-Lib/image:/app/image
-      - ./home/TA-Lib/.env:/app/.env
+      - ./data:/app/data
+      - ./image:/app/image
+      - ./.env:/app/.env
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app
+      - TZ=Asia/Shanghai
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
