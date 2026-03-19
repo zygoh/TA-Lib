@@ -39,6 +39,12 @@ class GrokUpdateResponse(BaseModel):
     error: str | None = None
 
 
+class GrokStatusResponse(BaseModel):
+    status: str = Field(..., description="任务状态: pending, running, completed, failed")
+    error: str | None = None
+    updated_at: int = Field(0, description="最后更新时间戳（秒）")
+
+
 class ChartsResponse(BaseModel):
     symbol: str
     charts: Dict[str, Dict[str, Any]]

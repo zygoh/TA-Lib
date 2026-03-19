@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -20,6 +21,7 @@ from app.models.crypto_mcp_schemas import (
     CryptoBundleResponse,
     GrokUpdateRequest,
     GrokUpdateResponse,
+    GrokStatusResponse,
     SentimentResponse,
     TimeResponse,
     ChartsResponse,
@@ -44,6 +46,29 @@ router = APIRouter(prefix="/crypto-mcp", tags=["crypto-mcp"])
 
 grok_client: GrokApiClient = GrokApiClient()
 grok_store: GrokStore = GrokStore()
+
+# Grok 任务状态：内存中维护，进程级别共享
+_grok_task_status: dict[str, str | int | None] = {
+    "status": "idle",       # idle / running / completed / failed
+    "error": None,
+    "updated_at": 0,
+}
+
+
+async def _run_grok_task(content: str) -> None:
+    """后台执行 Grok AI 请求并更新状态。"""
+    _grok_task_status["status"] = "running"
+    _grok_task_status["error"] = None
+    try:
+        result: str = await grok_client.fetch_sentiment(content)
+        grok_store.update(content=result)
+        _grok_task_status["status"] = "completed"
+        _grok_task_status["updated_at"] = int(time.time())
+        logger.info("✅ Grok 后台任务完成，内容长度: %d", len(result))
+    except Exception as e:
+        _grok_task_status["status"] = "failed"
+        _grok_task_status["error"] = str(e)
+        logger.error("❌ Grok 后台任务失败: %s", e)
 
 
 @router.get("/time", response_model=TimeResponse)
@@ -70,14 +95,21 @@ async def sentiment(symbol: str):
 async def update_grok(
     body: GrokUpdateRequest,
 ):
-    """接收用户消息内容，调用 Grok 4.1 AI 获取情绪分析并写入本地文件。"""
-    try:
-        result: str = await grok_client.fetch_sentiment(body.content)
-        grok_store.update(content=result)
-        return GrokUpdateResponse(ok=True)
-    except Exception as e:
-        logger.error("❌ Grok 情绪分析失败: %s", e)
-        return GrokUpdateResponse(ok=False, error=str(e))
+    """接收用户消息内容，后台异步调用 Grok 4.1 AI，立即返回。"""
+    if _grok_task_status["status"] == "running":
+        return GrokUpdateResponse(ok=False, error="已有任务正在执行中，请稍后再试")
+    asyncio.create_task(_run_grok_task(body.content))
+    return GrokUpdateResponse(ok=True)
+
+
+@router.get("/sentiment/grok/status", response_model=GrokStatusResponse)
+async def grok_status():
+    """查询 Grok AI 情绪分析任务的执行状态。"""
+    return GrokStatusResponse(
+        status=_grok_task_status["status"],  # type: ignore[arg-type]
+        error=_grok_task_status["error"],  # type: ignore[arg-type]
+        updated_at=_grok_task_status["updated_at"],  # type: ignore[arg-type]
+    )
 
 
 @router.get("/charts", response_model=ChartsResponse)
