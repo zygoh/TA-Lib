@@ -32,14 +32,18 @@ from app.services.crypto_mcp_service import (
     get_shanghai_time,
     get_crypto_bundle,
     get_sentiment,
-    update_grok_sentiment_file,
     generate_kline_charts,
     send_telegram_message,
 )
+from app.services.grok_api_client import GrokApiClient
+from app.services.grok_store import GrokStore
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/crypto-mcp", tags=["crypto-mcp"])
+
+grok_client: GrokApiClient = GrokApiClient()
+grok_store: GrokStore = GrokStore()
 
 
 @router.get("/time", response_model=TimeResponse)
@@ -66,11 +70,13 @@ async def sentiment(symbol: str):
 async def update_grok(
     body: GrokUpdateRequest,
 ):
-    """更新 TA-Lib 内部的 grok_sentiment.txt"""
+    """接收用户消息内容，调用 Grok 4.1 AI 获取情绪分析并写入本地文件。"""
     try:
-        update_grok_sentiment_file.update(content=body.content)
+        result: str = await grok_client.fetch_sentiment(body.content)
+        grok_store.update(content=result)
         return GrokUpdateResponse(ok=True)
     except Exception as e:
+        logger.error("❌ Grok 情绪分析失败: %s", e)
         return GrokUpdateResponse(ok=False, error=str(e))
 
 

@@ -31,7 +31,7 @@ class CryptoBundleResponse(BaseModel):
 
 
 class GrokUpdateRequest(BaseModel):
-    content: str = Field(..., min_length=1, description="要写入 grok_sentiment.txt 的完整内容（UTF-8）")
+    content: str = Field(..., min_length=1, description="发送给 Grok AI 的用户消息内容")
 
 
 class GrokUpdateResponse(BaseModel):
