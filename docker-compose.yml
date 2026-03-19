@@ -10,6 +10,10 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    volumes:
+      - ./home/TA-Lib/data:/app/data
+      - ./home/TA-Lib/image:/app/image
+      - ./home/TA-Lib/.env:/app/.env
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app

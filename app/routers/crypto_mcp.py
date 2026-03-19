@@ -154,11 +154,15 @@ async def all_in_one(symbol: str):
     一次性汇总：
     - time
     - bundle
+    - 后台触发图表生成（不阻塞、不返回）
     """
     target = ensure_symbol_usdt(symbol)
     time_data = get_shanghai_time()
 
     bundle_data = await get_crypto_bundle(target)
+
+    # 等待图表生成完成，但不返回结果（用户通过 /charts/image 获取）
+    await generate_kline_charts(target)
 
     return {
         "symbol": target,
