@@ -1,6 +1,6 @@
 # TA-Lib Crypto MCP API（4 个接口）
 
-服务地址（Base URL）：`https://n8n.do2ge.com/tail`
+服务地址（Base URL）：`https://do2ge.com/tail`
 
 统一说明：
 - 全部接口前缀：`/crypto-mcp`
@@ -15,7 +15,7 @@
 ### 请求
 
 ```http
-POST https://n8n.do2ge.com/tail/crypto-mcp/sentiment/grok
+POST https://do2ge.com/tail/crypto-mcp/sentiment/grok
 Content-Type: application/json
 ```
 
@@ -55,7 +55,7 @@ Body：
 ### 请求
 
 ```http
-GET https://n8n.do2ge.com/tail/crypto-mcp/sentiment/grok/status
+GET https://do2ge.com/tail/crypto-mcp/sentiment/grok/status
 ```
 
 ### 响应
@@ -83,7 +83,7 @@ GET https://n8n.do2ge.com/tail/crypto-mcp/sentiment/grok/status
 ### 请求
 
 ```http
-GET https://n8n.do2ge.com/tail/crypto-mcp/all?symbol=BTC
+GET https://do2ge.com/tail/crypto-mcp/all?symbol=BTC
 ```
 
 ### 响应（JSON）示意
@@ -114,7 +114,7 @@ GET https://n8n.do2ge.com/tail/crypto-mcp/all?symbol=BTC
 ### 请求
 
 ```http
-GET https://n8n.do2ge.com/tail/crypto-mcp/charts/image?symbol=BTC&interval=4h
+GET https://do2ge.com/tail/crypto-mcp/charts/image?symbol=BTC&interval=4h
 ```
 
 ### 响应
@@ -128,7 +128,7 @@ GET https://n8n.do2ge.com/tail/crypto-mcp/charts/image?symbol=BTC&interval=4h
 ```powershell
 Invoke-WebRequest `
   -Method GET `
-  -Uri "https://n8n.do2ge.com/tail/crypto-mcp/charts/image?symbol=BTC&interval=4h" `
+  -Uri "https://do2ge.com/tail/crypto-mcp/charts/image?symbol=BTC&interval=4h" `
   -OutFile ".\\BTC_4h.png"
 ```
 
