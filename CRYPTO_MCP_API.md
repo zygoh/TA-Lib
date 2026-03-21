@@ -1,6 +1,6 @@
 # TA-Lib Crypto MCP API（4 个接口）
 
-服务地址（Base URL）：`https://do2ge.com/tail`
+服务地址（Base URL）：`http://localhost:8000`
 
 统一说明：
 - 全部接口前缀：`/crypto-mcp`
@@ -8,23 +8,18 @@
 
 ---
 
-## 1) Grok AI 情绪分析：`POST /crypto-mcp/sentiment/grok`
+## 1) Grok AI 情绪分析：`GET /crypto-mcp/sentiment/grok/{SYMBOL}`
 
-用途：接收用户消息内容，后台异步调用 Grok 4.1 AI 获取加密货币市场情绪分析，立即返回。任务完成后结果写入 `data/grok_sentiment.txt`，通过状态查询接口获取进度。
+用途：按 SYMBOL（`BTC` 或 `ETH`，也支持 `BTCUSDT` / `ETHUSDT`）读取仓库内 `data/{SYMBOL}_grok_prompt.md` 作为发给 Grok 的提示内容，后台异步调用 Grok 4.1 AI 获取市场情绪分析，立即返回。任务完成后结果写入 `data/grok_sentiment.txt`，通过状态查询接口获取进度。
 
 ### 请求
 
 ```http
-POST https://do2ge.com/tail/crypto-mcp/sentiment/grok
-Content-Type: application/json
+GET http://localhost:8000/crypto-mcp/sentiment/grok/BTC
 ```
 
-Body：
-
-```json
-{
-  "content": "发送给 Grok AI 的用户消息内容"
-}
+```http
+GET http://localhost:8000/crypto-mcp/sentiment/grok/ETH
 ```
 
 ### 响应
@@ -55,7 +50,7 @@ Body：
 ### 请求
 
 ```http
-GET https://do2ge.com/tail/crypto-mcp/sentiment/grok/status
+GET http://localhost:8000/crypto-mcp/sentiment/grok/status
 ```
 
 ### 响应
@@ -83,7 +78,7 @@ GET https://do2ge.com/tail/crypto-mcp/sentiment/grok/status
 ### 请求
 
 ```http
-GET https://do2ge.com/tail/crypto-mcp/all?symbol=BTC
+GET http://localhost:8000/crypto-mcp/all?symbol=BTC
 ```
 
 ### 响应（JSON）示意
@@ -114,7 +109,7 @@ GET https://do2ge.com/tail/crypto-mcp/all?symbol=BTC
 ### 请求
 
 ```http
-GET https://do2ge.com/tail/crypto-mcp/charts/image?symbol=BTC&interval=4h
+GET http://localhost:8000/crypto-mcp/charts/image?symbol=BTC&interval=4h
 ```
 
 ### 响应
@@ -128,7 +123,7 @@ GET https://do2ge.com/tail/crypto-mcp/charts/image?symbol=BTC&interval=4h
 ```powershell
 Invoke-WebRequest `
   -Method GET `
-  -Uri "https://do2ge.com/tail/crypto-mcp/charts/image?symbol=BTC&interval=4h" `
+  -Uri "http://localhost:8000/crypto-mcp/charts/image?symbol=BTC&interval=4h" `
   -OutFile ".\\BTC_4h.png"
 ```
 

@@ -1,13 +1,17 @@
 """X.AI（Responses API）AI API 客户端模块。
 
-负责调用 X.AI 的 `/v1/responses` 接口，解析返回 JSON 中的最终文本（`output_text`）。
+负责调用 X.AI 的 `/v1/responses` 接口；默认使用 **SSE 流式**（`stream: true`），
+按官方说明持续接收数据，避免长任务时整包等待被中途断开。
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any
 import os
+import time
+from collections import Counter
+from typing import Any
 
 import aiohttp
 
@@ -15,27 +19,18 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 
 class GrokApiClient:
-    """X.AI Responses API 客户端，负责解析 output_text 并过滤 thinking 内容。
+    """X.AI Responses API 客户端：流式解析 `output_text` delta，并过滤推理类事件。"""
 
-    Attributes:
-        base_url: Grok API 基础地址。
-        api_key: Grok API 密钥。
-        model: Grok 模型名称。
-    """
-
-    # 请求超时配置：总超时 300 秒，连接超时 30 秒
+    # 流式长任务：总时间放宽；单段读不超时（避免工具调用阶段长时间无新字节）
     _TIMEOUT: aiohttp.ClientTimeout = aiohttp.ClientTimeout(
-        total=300,
+        total=3600,
         connect=30,
+        sock_connect=30,
+        sock_read=None,
     )
 
     def __init__(self) -> None:
-        """从环境变量加载配置，缺失则抛出 ValueError。
-
-        Raises:
-            ValueError: 当任一必需环境变量缺失时，错误信息中列出所有缺失变量名。
-        """
-        # 只对接 xAI 官方 Responses API：不做任何变量名兼容/回退。
+        """从环境变量加载配置，缺失则抛出 ValueError。"""
         api_key: str | None = os.getenv("XAI_API_KEY")
         model: str | None = os.getenv("XAI_MODEL")
         base_url: str = os.getenv("XAI_API_BASE_URL") or "https://api.x.ai/v1"
@@ -48,7 +43,6 @@ class GrokApiClient:
         if missing:
             raise ValueError(f"缺少必需的环境变量: {', '.join(missing)}")
 
-        # 规范化 base_url，确保后续拼接 `/responses` 不会出错
         base_url = base_url.rstrip("/")
         if not base_url.endswith("/v1") and "/v1" not in base_url:
             base_url = f"{base_url}/v1"
@@ -60,26 +54,13 @@ class GrokApiClient:
         logger.info("🚀 XAI GrokApiClient 初始化完成，模型: %s", self.model)
 
     async def fetch_sentiment(self, content: str) -> str:
-        """调用 X.AI 获取加密货币市场情绪分析。
-
-        将用户传入的 content 作为 input 发给 X.AI Responses API，
-        从返回 JSON 中提取 `output_text`（并跳过 `type="reasoning"` 的推理块）。
-
-        Args:
-            content: 用户传入的消息内容，作为 Responses API 的 `input` 发送给模型。
-
-        Returns:
-            过滤 thinking 后的最终分析文本。
-
-        Raises:
-            ValueError: 返回内容为空时抛出。
-            aiohttp.ClientError: API 请求失败时抛出。
-        """
+        """调用 X.AI 获取加密货币市场情绪分析（Responses API + SSE 流式）。"""
         url: str = f"{self.base_url}/responses"
 
         headers: dict[str, str] = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            "Accept": "text/event-stream",
         }
 
         payload: dict[str, object] = {
@@ -87,54 +68,198 @@ class GrokApiClient:
             "input": [
                 {"role": "user", "content": content},
             ],
-            # 让模型可调用内置搜索工具（由 xAI 服务器侧执行）
             "tools": [
                 {"type": "x_search"},
                 {"type": "web_search"},
             ],
+            "stream": True,
         }
 
-        logger.info("🚀 发送情绪分析请求到 Grok API: %s", url)
+        prompt_len = len(content.encode("utf-8"))
+        logger.info(
+            "🚀 Grok SSE 请求: url=%s model=%s prompt_bytes=%d stream=True",
+            url,
+            self.model,
+            prompt_len,
+        )
 
+        t0 = time.perf_counter()
         async with aiohttp.ClientSession(timeout=self._TIMEOUT) as session:
             async with session.post(
                 url, headers=headers, json=payload
             ) as response:
+                ct = response.headers.get("Content-Type", "")
+                logger.info(
+                    "📨 Grok 响应: status=%s Content-Type=%s",
+                    response.status,
+                    ct or "(none)",
+                )
                 response.raise_for_status()
-                data: Any = await response.json()
-                result: str = self._extract_output_text(data)
+                result, stream_stats = await self._read_sse_response_text(response)
 
-        logger.info("✅ 情绪分析完成，内容长度: %d", len(result))
+        elapsed = time.perf_counter() - t0
+        logger.info(
+            "✅ Grok 情绪分析完成: result_chars=%d 用时=%.2fs 原始字节=%d "
+            "data行=%d json解析失败=%d text_delta块=%d chat_delta块=%d "
+            "literal[DONE]=%s response.completed=%s done全文兜底=%s 事件=%s",
+            len(result),
+            elapsed,
+            stream_stats["raw_bytes"],
+            stream_stats["sse_data_lines"],
+            stream_stats["json_parse_errors"],
+            stream_stats["text_delta_chunks"],
+            stream_stats["chat_delta_chunks"],
+            stream_stats["saw_done_marker"],
+            stream_stats["saw_response_completed"],
+            stream_stats["used_done_fallback"],
+            dict(stream_stats["event_types"].most_common(20)),
+        )
         return result
 
-    @staticmethod
-    def _extract_output_text(data: Any) -> str:
-        """从 Responses API 返回 JSON 中提取 `output_text` 文本。
-
-        Responses API 的返回结构可能在不同模型/版本下略有差异，因此这里
-        使用递归方式查找所有形如：
-        - {"type": "output_text", "text": "..."} 的对象并拼接。
-        """
-
+    async def _read_sse_response_text(
+        self, response: aiohttp.ClientResponse
+    ) -> tuple[str, dict[str, Any]]:
+        """SSE 解析：标准事件边界（双换行），支持多行 data 与 event 行（xAI Responses）。"""
         parts: list[str] = []
+        fallback_ref: list[str | None] = [None]
+        stream_stats: dict[str, Any] = {
+            "raw_bytes": 0,
+            "sse_data_lines": 0,
+            "text_delta_chunks": 0,
+            "chat_delta_chunks": 0,
+            "saw_done_marker": False,
+            "saw_response_completed": False,
+            "used_done_fallback": False,
+            "event_types": Counter(),
+            "json_parse_errors": 0,
+            "first_data_logged": False,
+        }
 
-        def _walk(v: Any) -> None:
-            if isinstance(v, dict):
-                # 严格跳过推理过程块：官方示例中推理为 type="reasoning"
-                if v.get("type") == "reasoning":
+        buf = ""
+        async for raw in response.content.iter_any():
+            stream_stats["raw_bytes"] += len(raw)
+            buf += raw.decode("utf-8", errors="replace")
+
+            while "\n\n" in buf:
+                event_block, buf = buf.split("\n\n", 1)
+                self._process_sse_event_block(
+                    event_block.strip(), parts, fallback_ref, stream_stats
+                )
+
+        if buf.strip():
+            self._process_sse_event_block(buf.strip(), parts, fallback_ref, stream_stats)
+
+        text = "".join(parts).strip()
+        used_fallback = False
+        if not text and fallback_ref[0]:
+            text = fallback_ref[0].strip()
+            used_fallback = bool(text)
+        stream_stats["used_done_fallback"] = used_fallback
+
+        if not text:
+            logger.error(
+                "❌ Grok SSE 无有效正文: event=%s data行=%d",
+                dict(stream_stats["event_types"].most_common(15)),
+                stream_stats["sse_data_lines"],
+            )
+            raise ValueError("❌ Grok API 流式返回为空，未获取到有效的情绪分析")
+        return text, stream_stats
+
+    def _process_sse_event_block(
+        self,
+        event_block: str,
+        parts: list[str],
+        fallback_ref: list[str | None],
+        stream_stats: dict[str, Any],
+    ) -> None:
+        """处理单个 SSE 事件块（多行 data: 拼接 + 可选 event:）。"""
+        lines = event_block.splitlines()
+        event_type: str | None = None
+        data_lines: list[str] = []
+
+        for line in lines:
+            line = line.rstrip("\r")
+            if line.startswith("event:"):
+                event_type = line[6:].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].strip())
+
+        if not data_lines:
+            return
+
+        payload = "\n".join(data_lines)
+        if payload == "[DONE]":
+            stream_stats["saw_done_marker"] = True
+            logger.debug("Grok SSE: data [DONE]")
+            return
+
+        try:
+            obj: Any = json.loads(payload)
+        except json.JSONDecodeError:
+            stream_stats["json_parse_errors"] += 1
+            logger.warning("Grok SSE: JSON 解析失败 payload前200字=%r", payload[:200])
+            return
+
+        if not isinstance(obj, dict):
+            logger.warning("Grok SSE: data JSON 非 object，类型=%s", type(obj).__name__)
+            return
+
+        stream_stats["sse_data_lines"] += 1
+        if not stream_stats["first_data_logged"]:
+            stream_stats["first_data_logged"] = True
+            logger.debug(
+                "Grok SSE 首条 data（截断）: %s",
+                payload[:400] + ("…" if len(payload) > 400 else ""),
+            )
+
+        # 错误处理
+        err = obj.get("error")
+        if err is not None:
+            msg = err.get("message") if isinstance(err, dict) else str(err)
+            logger.error("Grok SSE: error 事件 err=%r", err)
+            raise RuntimeError(f"Grok API 返回错误: {msg}")
+
+        # 类型优先级：JSON 中的 type > event: 头
+        t: str | None = obj.get("type") if isinstance(obj.get("type"), str) else event_type
+        if isinstance(t, str):
+            stream_stats["event_types"][t] += 1
+
+        # 1. 首选官方 delta
+        if t == "response.output_text.delta" and isinstance(obj.get("delta"), str):
+            stream_stats["text_delta_chunks"] += 1
+            parts.append(obj["delta"])
+            return
+
+        if t == "response.completed":
+            stream_stats["saw_response_completed"] = True
+            return
+
+        # 2. done 兜底
+        if t == "response.output_text.done" and isinstance(obj.get("text"), str):
+            fallback_ref[0] = obj["text"]
+            logger.debug("Grok SSE: output_text.done 长度=%d", len(obj["text"]))
+            return
+
+        # 3. 兼容旧 Chat Completions 风格
+        choices = obj.get("choices")
+        if isinstance(choices, list) and choices:
+            c0 = choices[0]
+            if isinstance(c0, dict):
+                delta = c0.get("delta")
+                if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+                    stream_stats["chat_delta_chunks"] += 1
+                    parts.append(delta["content"])
                     return
-                if v.get("type") == "output_text":
-                    text = v.get("text")
-                    if isinstance(text, str) and text.strip():
-                        parts.append(text)
-                for vv in v.values():
-                    _walk(vv)
-            elif isinstance(v, list):
-                for item in v:
-                    _walk(item)
 
-        _walk(data)
-        result = "\n".join(parts).strip()
-        if not result:
-            raise ValueError("❌ Grok API 返回内容为空，未获取到有效的情绪分析")
-        return result
+        # 非正文事件安静处理
+        if isinstance(t, str) and t not in ("response.output_text.delta", "response.output_text.done"):
+            if t.startswith("response.") and (
+                "reasoning" in t or "in_progress" in t or t.endswith(".created")
+            ):
+                logger.debug("Grok SSE: 忽略事件 type=%s", t)
+            else:
+                logger.debug(
+                    "Grok SSE: 未拼接正文的 data 事件 type=%s keys=%s",
+                    t,
+                    list(obj.keys())[:12],
+                )

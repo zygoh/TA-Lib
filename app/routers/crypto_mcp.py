@@ -19,7 +19,6 @@ from fastapi.responses import FileResponse
 
 from app.models.crypto_mcp_schemas import (
     CryptoBundleResponse,
-    GrokUpdateRequest,
     GrokUpdateResponse,
     GrokStatusResponse,
     SentimentResponse,
@@ -46,6 +45,24 @@ router = APIRouter(prefix="/crypto-mcp", tags=["crypto-mcp"])
 
 grok_client: GrokApiClient = GrokApiClient()
 grok_store: GrokStore = GrokStore()
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _normalize_grok_base_symbol(symbol: str) -> str:
+    """路径参数可为 BTC / ETH 或 BTCUSDT / ETHUSDT。"""
+    s = (symbol or "").strip().upper()
+    if s.endswith("USDT"):
+        s = s[:-4]
+    if s in ("BTC", "ETH"):
+        return s
+    raise HTTPException(
+        status_code=400,
+        detail="SYMBOL 仅支持 BTC 或 ETH（可带 USDT 后缀，如 BTCUSDT）",
+    )
+
 
 # Grok 任务状态：内存中维护，进程级别共享
 _grok_task_status: dict[str, str | int | None] = {
@@ -91,17 +108,6 @@ async def sentiment(symbol: str):
     return await get_sentiment(target)
 
 
-@router.post("/sentiment/grok", response_model=GrokUpdateResponse)
-async def update_grok(
-    body: GrokUpdateRequest,
-):
-    """接收用户消息内容，后台异步调用 Grok 4.1 AI，立即返回。"""
-    if _grok_task_status["status"] == "running":
-        return GrokUpdateResponse(ok=False, error="已有任务正在执行中，请稍后再试")
-    asyncio.create_task(_run_grok_task(body.content))
-    return GrokUpdateResponse(ok=True)
-
-
 @router.get("/sentiment/grok/status", response_model=GrokStatusResponse)
 async def grok_status():
     """查询 Grok AI 情绪分析任务的执行状态。"""
@@ -110,6 +116,25 @@ async def grok_status():
         error=_grok_task_status["error"],  # type: ignore[arg-type]
         updated_at=_grok_task_status["updated_at"],  # type: ignore[arg-type]
     )
+
+
+@router.get("/sentiment/grok/{symbol}", response_model=GrokUpdateResponse)
+async def update_grok(symbol: str):
+    """
+    根据 SYMBOL（BTC/ETH）读取 data/{SYMBOL}_grok_prompt.md，
+    后台异步调用 Grok 4.1 AI，立即返回。
+    """
+    base = _normalize_grok_base_symbol(symbol)
+    prompt_path = _repo_root() / "data" / f"{base}_grok_prompt.md"
+    if not prompt_path.is_file():
+        raise HTTPException(status_code=404, detail=f"未找到提示文件: {prompt_path.name}")
+    content = prompt_path.read_text(encoding="utf-8").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail=f"提示文件内容为空: {prompt_path.name}")
+    if _grok_task_status["status"] == "running":
+        return GrokUpdateResponse(ok=False, error="已有任务正在执行中，请稍后再试")
+    asyncio.create_task(_run_grok_task(content))
+    return GrokUpdateResponse(ok=True)
 
 
 @router.get("/charts", response_model=ChartsResponse)
