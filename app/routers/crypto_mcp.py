@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
@@ -71,6 +71,13 @@ _grok_task_status: dict[str, str | int | None] = {
     "updated_at": 0,
 }
 
+_grok_schedule: dict[str, tuple[int, int]] = {
+    "ETH": (7, 55),   # 北京时间 07:55
+    "BTC": (19, 55),  # 北京时间 19:55
+}
+_grok_scheduler_tasks: dict[str, asyncio.Task[None]] = {}
+_shanghai_tz = ZoneInfo("Asia/Shanghai")
+
 
 async def _run_grok_task(content: str) -> None:
     """后台执行 Grok AI 请求并更新状态。"""
@@ -86,6 +93,80 @@ async def _run_grok_task(content: str) -> None:
         _grok_task_status["status"] = "failed"
         _grok_task_status["error"] = str(e)
         logger.error("❌ Grok 后台任务失败: %s", e)
+
+
+def _load_grok_prompt_content(base_symbol: str) -> str:
+    """读取并校验 data/{SYMBOL}_grok_prompt.md。"""
+    prompt_path = _repo_root() / "data" / f"{base_symbol}_grok_prompt.md"
+    if not prompt_path.is_file():
+        raise FileNotFoundError(f"未找到提示文件: {prompt_path.name}")
+    content = prompt_path.read_text(encoding="utf-8").strip()
+    if not content:
+        raise ValueError(f"提示文件内容为空: {prompt_path.name}")
+    return content
+
+
+async def _run_grok_task_for_symbol(base_symbol: str) -> bool:
+    """
+    按 SYMBOL 读取提示词并执行 Grok 分析。
+    返回 True 表示执行完成，False 表示因已有任务在跑而跳过。
+    """
+    content = _load_grok_prompt_content(base_symbol)
+    if _grok_task_status["status"] == "running":
+        logger.warning("⏭️ Grok 定时任务跳过：已有任务执行中 symbol=%s", base_symbol)
+        return False
+    await _run_grok_task(content)
+    return True
+
+
+def _seconds_until_next_run(hour: int, minute: int) -> tuple[float, str]:
+    """计算距离下一次指定北京时间触发点的秒数与展示时间。"""
+    now = datetime.now(_shanghai_tz)
+    next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if next_run <= now:
+        next_run = next_run + timedelta(days=1)
+    return (next_run - now).total_seconds(), next_run.isoformat()
+
+
+async def _scheduled_grok_runner(base_symbol: str, hour: int, minute: int) -> None:
+    """循环执行 SYMBOL 的每日定时任务。"""
+    logger.info(
+        "🕒 启动 Grok 定时任务 symbol=%s, schedule=%02d:%02d Asia/Shanghai",
+        base_symbol,
+        hour,
+        minute,
+    )
+    while True:
+        sleep_seconds, next_run_str = _seconds_until_next_run(hour, minute)
+        logger.info("⏱️ Grok 下次执行 symbol=%s at %s", base_symbol, next_run_str)
+        await asyncio.sleep(sleep_seconds)
+        try:
+            await _run_grok_task_for_symbol(base_symbol)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("❌ Grok 定时任务执行异常 symbol=%s: %s", base_symbol, e)
+
+
+def start_grok_scheduler() -> None:
+    """启动 ETH/BTC 的 Grok 定时任务（幂等）。"""
+    for base_symbol, (hour, minute) in _grok_schedule.items():
+        existing = _grok_scheduler_tasks.get(base_symbol)
+        if existing and not existing.done():
+            continue
+        _grok_scheduler_tasks[base_symbol] = asyncio.create_task(
+            _scheduled_grok_runner(base_symbol, hour, minute)
+        )
+
+
+async def stop_grok_scheduler() -> None:
+    """停止所有 Grok 定时任务。"""
+    tasks = list(_grok_scheduler_tasks.values())
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _grok_scheduler_tasks.clear()
 
 
 @router.get("/time", response_model=TimeResponse)
@@ -121,19 +202,17 @@ async def grok_status():
 @router.get("/sentiment/grok/{symbol}", response_model=GrokUpdateResponse)
 async def update_grok(symbol: str):
     """
-    根据 SYMBOL（BTC/ETH）读取 data/{SYMBOL}_grok_prompt.md，
-    后台异步调用 Grok 4.1 AI，立即返回。
+    兼容接口：当前已改为定时任务模式，不再手动触发。
+    - ETH: 每日 07:55（北京时间）
+    - BTC: 每日 19:55（北京时间）
     """
     base = _normalize_grok_base_symbol(symbol)
-    prompt_path = _repo_root() / "data" / f"{base}_grok_prompt.md"
-    if not prompt_path.is_file():
-        raise HTTPException(status_code=404, detail=f"未找到提示文件: {prompt_path.name}")
-    content = prompt_path.read_text(encoding="utf-8").strip()
-    if not content:
-        raise HTTPException(status_code=400, detail=f"提示文件内容为空: {prompt_path.name}")
-    if _grok_task_status["status"] == "running":
-        return GrokUpdateResponse(ok=False, error="已有任务正在执行中，请稍后再试")
-    asyncio.create_task(_run_grok_task(content))
+    try:
+        _load_grok_prompt_content(base)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return GrokUpdateResponse(ok=True)
 
 
@@ -181,14 +260,33 @@ async def all_in_one(symbol: str):
     - bundle
     - 后台触发图表生成（不阻塞、不返回）
     """
+    t0 = time.perf_counter()
     target = ensure_symbol_usdt(symbol)
+    logger.info("all_in_one 开始 symbol=%s -> %s", symbol, target)
+
+    t_charts = time.perf_counter()
+    await generate_kline_charts(target)
+    logger.info(
+        "all_in_one K 线图生成完成 symbol=%s 耗时 %.2fs",
+        target,
+        time.perf_counter() - t_charts,
+    )
+
     time_data = get_shanghai_time()
 
+    t_bundle = time.perf_counter()
     bundle_data = await get_crypto_bundle(target)
+    logger.info(
+        "all_in_one bundle 聚合完成 symbol=%s 耗时 %.2fs",
+        target,
+        time.perf_counter() - t_bundle,
+    )
 
-    # 等待图表生成完成，但不返回结果（用户通过 /charts/image 获取）
-    await generate_kline_charts(target)
-
+    logger.info(
+        "all_in_one 结束 symbol=%s 总耗时 %.2fs",
+        target,
+        time.perf_counter() - t0,
+    )
     return {
         "symbol": target,
         "time": time_data,

@@ -5,6 +5,7 @@
 import logging
 from datetime import datetime
 import io
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +13,7 @@ from PIL import Image, ImageDraw
 
 from app.models.schemas import HealthResponse
 from app.routers import indicators, images, trading, crypto_mcp
+from app.routers.crypto_mcp import start_grok_scheduler, stop_grok_scheduler
 
 # 配置日志 - 只输出到控制台
 logging.basicConfig(
@@ -23,13 +25,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """应用生命周期：启动/关闭时管理 Grok 定时任务。"""
+    start_grok_scheduler()
+    logger.info("Grok 定时任务已启动（ETH 07:55 / BTC 19:55，Asia/Shanghai）")
+    try:
+        yield
+    finally:
+        await stop_grok_scheduler()
+        logger.info("Grok 定时任务已停止")
+
+
 # 创建FastAPI应用
 app = FastAPI(
     title="币安技术指标计算API",
     description="支持并发的币安期货技术指标计算服务",
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # 添加CORS中间件
