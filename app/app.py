@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw
 from app.models.schemas import HealthResponse
 from app.routers import indicators, images, trading, crypto_mcp
 from app.routers.crypto_mcp import start_grok_scheduler, stop_grok_scheduler
+from app.services.cursor_agent_scheduler import cursor_agent_scheduler
 
 # 配置日志 - 只输出到控制台
 logging.basicConfig(
@@ -31,9 +32,11 @@ async def lifespan(_: FastAPI):
     """应用生命周期：启动/关闭时管理 Grok 定时任务。"""
     start_grok_scheduler()
     logger.info("Grok 定时任务已启动（ETH 07:55 / BTC 19:55，Asia/Shanghai）")
+    cursor_agent_scheduler.start()
     try:
         yield
     finally:
+        await cursor_agent_scheduler.stop()
         await stop_grok_scheduler()
         logger.info("Grok 定时任务已停止")
 
