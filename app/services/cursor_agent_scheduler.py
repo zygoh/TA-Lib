@@ -39,20 +39,33 @@ def _bool_env(name: str, default: bool) -> bool:
 
 
 def _build_prompt(symbol: str) -> str:
-    skill_path = (
+    flow_path = "skills/crypto-post-flow/SKILL.md"
+    analyst_path = (
         "skills/btc-crypto-analyst/SKILL.md"
         if symbol == "BTC"
         else "skills/eth-crypto-analyst/SKILL.md"
     )
+    rewriter_path = "skills/threedogs-trader-skill/SKILL.md"
+    distribute_path = "skills/distribute-post/SKILL.md"
     lines = [
-        f"Please execute {skill_path} from this repository directly.",
+        f"Please execute {flow_path} from this repository directly with symbol={symbol}.",
+        "",
+        "Pipeline is fixed to three stages, executed strictly in order:",
+        f"  Stage 1 (analyst):   {analyst_path}",
+        f"  Stage 2 (rewriter):  {rewriter_path}  (skill name: threedogs-crypto-rewriter)",
+        f"  Stage 3 (distribute):{distribute_path}",
         "",
         "Requirements:",
         "1. Use only real market data. If data fails, report the exact failure point.",
-        "2. After analysis, you must call distribute-post for publishing.",
-        "3. Strictly follow the writing and behavior rules in the skill file.",
-        "4. Output language must be Simplified Chinese.",
-        "5. Final output should only be a distribution result summary (success/failed/partial).",
+        "2. Stage 1 only produces draft_text; DO NOT call distribute-post from the analyst skill.",
+        "3. Stage 2 must rewrite the draft into final_text with ZERO changes to facts "
+        "(price, direction, support/resistance, KOL IDs, timestamp, hashtag).",
+        "4. Stage 3 must receive final_text (not draft_text) and dispatch to telegram/x/square.",
+        "5. Strictly follow the writing and behavior rules inside each skill file.",
+        "6. Output language must be Simplified Chinese.",
+        "7. Final output should only be a distribution result summary.",
+        "8. The summary must include overall status (success/partial/failed) and per-channel states for telegram/x/square.",
+        "9. If any channel fails, include a concise failure reason for that channel.",
     ]
     return "\n".join(lines)
 
