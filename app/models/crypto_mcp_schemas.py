@@ -51,17 +51,25 @@ class ChartsResponse(BaseModel):
     errors: List[Dict[str, str]]
 
 
-class TelegramSendRequest(BaseModel):
-    message: str = Field(..., min_length=1, description="Markdown 文本")
-
-
-class TelegramSendResponse(BaseModel):
-    ok: bool
-    result: Dict[str, Any]
-
-
 class CryptoMcpAllResponse(BaseModel):
     symbol: str
     time: TimeResponse
     bundle: CryptoBundleResponse
+
+
+class DistributeRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, description="BTC / ETH（可带USDT后缀）")
+    text: str = Field(..., min_length=1, description="待分发正文")
+    chart_4h_path: Optional[str] = Field(None, description="可选4h图片路径")
+    chart_2h_path: Optional[str] = Field(None, description="兼容字段，接口会忽略")
+
+
+class DistributeResponse(BaseModel):
+    status: str = Field(..., description="success / partial / failed")
+    symbol: str
+    telegram_sent: bool
+    x_sent: bool
+    square_sent: bool
+    channels: Dict[str, Any]
+    notes: List[str]
 

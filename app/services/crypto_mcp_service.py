@@ -16,7 +16,6 @@ from zoneinfo import ZoneInfo
 
 from app.services.indicator_service import calculate_indicators_sync
 from app.services.grok_store import GrokStore
-from app.services.telegram_service import TelegramService
 from app.services.kline_chart_service import KlineChartService
 
 
@@ -387,12 +386,4 @@ async def generate_kline_charts(symbol: str) -> Dict[str, Any]:
 
 
 update_grok_sentiment_file = _grok_store
-
-
-_telegram = TelegramService()
-
-
-async def send_telegram_message(message: str) -> Dict[str, Any]:
-    ok, result = await _telegram.send_markdown(message)
-    return {"ok": ok, "result": result}
 

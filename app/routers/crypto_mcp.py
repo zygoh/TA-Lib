@@ -2,7 +2,7 @@
 兼容 crypto-mcp 的聚合能力路由
 
 目标：
-- 由 TA-Lib 直接提供 crypto-mcp 里用到的聚合、情绪、图表与 Telegram 投递能力
+- 由 TA-Lib 直接提供 crypto-mcp 里用到的聚合、情绪、图表与统一分发能力
 """
 
 from __future__ import annotations
@@ -24,9 +24,9 @@ from app.models.crypto_mcp_schemas import (
     SentimentResponse,
     TimeResponse,
     ChartsResponse,
-    TelegramSendRequest,
-    TelegramSendResponse,
     CryptoMcpAllResponse,
+    DistributeRequest,
+    DistributeResponse,
 )
 from app.services.crypto_mcp_service import (
     ensure_symbol_usdt,
@@ -34,8 +34,8 @@ from app.services.crypto_mcp_service import (
     get_crypto_bundle,
     get_sentiment,
     generate_kline_charts,
-    send_telegram_message,
 )
+from app.services.distribution_service import distribute_post
 from app.services.grok_api_client import GrokApiClient
 from app.services.grok_store import GrokStore
 
@@ -294,8 +294,33 @@ async def all_in_one(symbol: str):
     }
 
 
-@router.post("/telegram", response_model=TelegramSendResponse)
-async def telegram_send(body: TelegramSendRequest):
-    """发送 Markdown 报告到 Telegram（需要在环境变量配置 bot token/chat id）"""
-    return await send_telegram_message(body.message)
+@router.post("/distribute", response_model=DistributeResponse)
+async def distribute(body: DistributeRequest):
+    """
+    单接口统一分发到 Telegram / X / Binance Square。
+    - TG 与 X：优先图文，缺图降级纯文本
+    - Square：仅文本
+    """
+    target = ensure_symbol_usdt(body.symbol)
+    try:
+        # 尽量保证 4h 图存在；失败不阻断分发。
+        await generate_kline_charts(target)
+    except Exception as e:
+        logger.warning("distribute 预生成图表失败 symbol=%s: %s", target, e)
+
+    result = await distribute_post(
+        symbol_usdt=target,
+        text=body.text,
+        chart_4h_path=body.chart_4h_path,
+        chart_2h_path=body.chart_2h_path,
+    )
+    logger.info(
+        "distribute api symbol=%s status=%s tg=%s x=%s square=%s",
+        target,
+        result.get("status"),
+        result.get("telegram_sent"),
+        result.get("x_sent"),
+        result.get("square_sent"),
+    )
+    return result
 
