@@ -29,17 +29,21 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _resolve_chart_4h_path(symbol_usdt: str, explicit_path: str | None) -> str | None:
-    if explicit_path:
-        p = Path(explicit_path).expanduser().resolve()
-        if p.is_file():
-            return str(p)
-
+def _resolve_chart_4h_path(symbol_usdt: str) -> str | None:
     base_symbol = symbol_usdt.replace("USDT", "").upper()
     date_str = datetime.now(_SH_TZ).strftime("%Y-%m-%d")
-    candidate = _repo_root() / "image" / f"{base_symbol}_{date_str}" / f"{base_symbol}_4h.png"
+    image_root = _repo_root() / "image"
+    candidate = image_root / f"{base_symbol}_{date_str}" / f"{base_symbol}_4h.png"
+    logger.info(
+        "distribute chart lookup symbol=%s base_dir=%s candidate=%s",
+        symbol_usdt,
+        image_root,
+        candidate,
+    )
     if candidate.is_file():
+        logger.info("distribute chart resolved symbol=%s path=%s", symbol_usdt, candidate)
         return str(candidate)
+    logger.warning("distribute chart missing symbol=%s candidate=%s", symbol_usdt, candidate)
     return None
 
 
@@ -254,13 +258,12 @@ def _derive_status(telegram_sent: bool, x_sent: bool, square_sent: bool) -> str:
 async def distribute_post(
     symbol_usdt: str,
     text: str,
-    chart_4h_path: str | None = None,
-    chart_2h_path: str | None = None,
 ) -> Dict[str, Any]:
     if not text.strip():
         raise ValueError("text 不能为空")
 
-    use_chart_4h = _resolve_chart_4h_path(symbol_usdt, chart_4h_path)
+    logger.info("distribute start symbol=%s text_len=%d", symbol_usdt, len(text))
+    use_chart_4h = _resolve_chart_4h_path(symbol_usdt)
     telegram_result, x_result, square_result = await asyncio.gather(
         _send_telegram(text, use_chart_4h),
         _send_x(text, use_chart_4h),
@@ -273,10 +276,8 @@ async def distribute_post(
     status = _derive_status(telegram_sent, x_sent, square_sent)
 
     notes: List[str] = []
-    if chart_2h_path:
-        notes.append("chart_2h_path is ignored by design")
     if use_chart_4h is None:
-        notes.append("chart_4h missing, TG/X may fallback to text")
+        notes.append("chart_4h missing under TA-Lib/image, TG/X may fallback to text")
     if status == "partial":
         notes.append("partial success")
     elif status == "failed":
@@ -296,11 +297,16 @@ async def distribute_post(
         "notes": notes,
     }
     logger.info(
-        "distribute status=%s symbol=%s tg=%s x=%s square=%s",
+        "distribute status=%s symbol=%s tg=%s(%s) x=%s(%s) square=%s(%s)",
         status,
         symbol_usdt,
         telegram_sent,
+        telegram_result.get("mode"),
         x_sent,
+        x_result.get("mode"),
         square_sent,
+        square_result.get("mode"),
     )
+    if notes:
+        logger.info("distribute notes symbol=%s notes=%s", symbol_usdt, notes)
     return result

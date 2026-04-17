@@ -5,7 +5,7 @@ crypto-mcp 兼容接口的请求/响应模型
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 class TimeResponse(BaseModel):
@@ -60,8 +60,6 @@ class CryptoMcpAllResponse(BaseModel):
 class DistributeRequest(BaseModel):
     symbol: str = Field(..., min_length=1, description="BTC / ETH（可带USDT后缀）")
     text: str = Field(..., min_length=1, description="待分发正文")
-    chart_4h_path: Optional[str] = Field(None, description="可选4h图片路径")
-    chart_2h_path: Optional[str] = Field(None, description="兼容字段，接口会忽略")
 
 
 class DistributeResponse(BaseModel):

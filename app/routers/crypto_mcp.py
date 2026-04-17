@@ -311,8 +311,6 @@ async def distribute(body: DistributeRequest):
     result = await distribute_post(
         symbol_usdt=target,
         text=body.text,
-        chart_4h_path=body.chart_4h_path,
-        chart_2h_path=body.chart_2h_path,
     )
     logger.info(
         "distribute api symbol=%s status=%s tg=%s x=%s square=%s",
