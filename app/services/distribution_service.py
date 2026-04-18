@@ -9,7 +9,7 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -23,10 +23,50 @@ _TG_API_BASE = "https://api.telegram.org"
 _X_API_BASE = "https://api.x.com/2"
 _X_UPLOAD_BASE = "https://upload.twitter.com/1.1"
 _SQUARE_POST_URL = "https://www.binance.com/bapi/composite/v1/public/pgc/openApi/content/add"
+_DOTENV_CACHE: Dict[str, str] | None = None
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _load_repo_dotenv() -> Dict[str, str]:
+    global _DOTENV_CACHE
+    if _DOTENV_CACHE is not None:
+        return _DOTENV_CACHE
+
+    env_map: Dict[str, str] = {}
+    env_path = _repo_root() / ".env"
+    if env_path.is_file():
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key:
+                env_map[key] = value.strip()
+    _DOTENV_CACHE = env_map
+    return env_map
+
+
+def _read_env_with_source(name: str) -> Tuple[str, str]:
+    process_value = (os.getenv(name) or "").strip()
+    if process_value:
+        return process_value, "process_env"
+
+    dotenv_value = _load_repo_dotenv().get(name, "").strip()
+    if dotenv_value:
+        return dotenv_value, "repo_dotenv"
+    return "", "missing"
+
+
+def _credential_snapshot(names: List[str]) -> Dict[str, Dict[str, Any]]:
+    snapshot: Dict[str, Dict[str, Any]] = {}
+    for name in names:
+        value, source = _read_env_with_source(name)
+        snapshot[name] = {"present": bool(value), "source": source, "length": len(value)}
+    return snapshot
 
 
 def _resolve_chart_4h_path(symbol_usdt: str) -> str | None:
@@ -89,10 +129,26 @@ def _oauth_authorization_header(
 
 
 async def _send_telegram(text: str, image_path: str | None) -> Dict[str, Any]:
-    token = (os.getenv("TG_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-    chat_id = (os.getenv("TG_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    token, token_source = _read_env_with_source("TG_BOT_TOKEN")
+    if not token:
+        token, token_source = _read_env_with_source("TELEGRAM_BOT_TOKEN")
+
+    chat_id, chat_id_source = _read_env_with_source("TG_CHAT_ID")
+    if not chat_id:
+        chat_id, chat_id_source = _read_env_with_source("TELEGRAM_CHAT_ID")
+
     if not token or not chat_id:
-        return {"sent": False, "mode": "none", "note": "missing TG_BOT_TOKEN or TG_CHAT_ID"}
+        return {
+            "sent": False,
+            "mode": "none",
+            "note": "missing TG_BOT_TOKEN or TG_CHAT_ID",
+            "credential_check": {
+                "token_source": token_source,
+                "chat_id_source": chat_id_source,
+                "token_present": bool(token),
+                "chat_id_present": bool(chat_id),
+            },
+        }
 
     timeout = aiohttp.ClientTimeout(total=30)
     async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
@@ -154,16 +210,26 @@ async def _x_upload_media(
 
 
 async def _send_x(text: str, image_path: str | None) -> Dict[str, Any]:
-    consumer_key = os.getenv("X_CONSUMER_KEY", "").strip()
-    consumer_secret = os.getenv("X_CONSUMER_SECRET", "").strip()
-    access_token = os.getenv("X_ACCESS_TOKEN", "").strip()
-    access_token_secret = os.getenv("X_ACCESS_TOKEN_SECRET", "").strip()
+    consumer_key, _ = _read_env_with_source("X_CONSUMER_KEY")
+    consumer_secret, _ = _read_env_with_source("X_CONSUMER_SECRET")
+    access_token, _ = _read_env_with_source("X_ACCESS_TOKEN")
+    access_token_secret, _ = _read_env_with_source("X_ACCESS_TOKEN_SECRET")
+    x_credential_check = _credential_snapshot(
+        [
+            "X_CONSUMER_KEY",
+            "X_CONSUMER_SECRET",
+            "X_ACCESS_TOKEN",
+            "X_ACCESS_TOKEN_SECRET",
+        ]
+    )
+    logger.info("x credential check: %s", x_credential_check)
 
     if not all([consumer_key, consumer_secret, access_token, access_token_secret]):
         return {
             "sent": False,
             "mode": "none",
             "note": "missing X_CONSUMER_KEY/X_CONSUMER_SECRET/X_ACCESS_TOKEN/X_ACCESS_TOKEN_SECRET",
+            "credential_check": x_credential_check,
         }
 
     timeout = aiohttp.ClientTimeout(total=45)
@@ -184,7 +250,12 @@ async def _send_x(text: str, image_path: str | None) -> Dict[str, Any]:
                 body["media"] = {"media_ids": [media_id]}
                 mode = "image+text"
             except Exception as exc:  # noqa: BLE001
-                return {"sent": False, "mode": "image+text", "note": f"x media upload failed: {exc}"}
+                return {
+                    "sent": False,
+                    "mode": "image+text",
+                    "note": f"x media upload failed: {exc}",
+                    "credential_check": x_credential_check,
+                }
 
         tweet_url = f"{_X_API_BASE}/tweets"
         auth = _oauth_authorization_header(
@@ -205,18 +276,38 @@ async def _send_x(text: str, image_path: str | None) -> Dict[str, Any]:
         ) as resp:
             payload = await resp.json(content_type=None)
             if resp.status >= 400:
-                return {"sent": False, "mode": mode, "note": f"x post failed http={resp.status}", "payload": payload}
+                auth_note = "x auth failed (likely credential/permission mismatch)" if resp.status == 401 else None
+                return {
+                    "sent": False,
+                    "mode": mode,
+                    "note": f"x post failed http={resp.status}",
+                    "auth_note": auth_note,
+                    "payload": payload,
+                    "credential_check": x_credential_check,
+                }
             tweet_id = payload.get("data", {}).get("id")
             result: Dict[str, Any] = {"sent": True, "mode": mode, "payload": payload}
             if tweet_id:
                 result["url"] = f"https://x.com/i/status/{tweet_id}"
+            result["credential_check"] = x_credential_check
             return result
 
 
 async def _send_square(text: str) -> Dict[str, Any]:
-    api_key = os.getenv("SQUARE_OPENAPI_KEY", "").strip()
+    api_key, api_key_source = _read_env_with_source("SQUARE_OPENAPI_KEY")
     if not api_key:
-        return {"sent": False, "mode": "none", "note": "missing SQUARE_OPENAPI_KEY"}
+        return {
+            "sent": False,
+            "mode": "none",
+            "note": "missing SQUARE_OPENAPI_KEY",
+            "credential_check": {
+                "SQUARE_OPENAPI_KEY": {
+                    "present": bool(api_key),
+                    "source": api_key_source,
+                    "length": len(api_key),
+                }
+            },
+        }
 
     timeout = aiohttp.ClientTimeout(total=30)
     body = {"bodyTextOnly": text}
