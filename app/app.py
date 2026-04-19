@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw
 
 from app.models.schemas import HealthResponse
-from app.routers import indicators, images, trading, crypto_mcp
+from app.routers import indicators, images, trading, crypto_mcp, oauth_x
 from app.routers.crypto_mcp import start_grok_scheduler, stop_grok_scheduler
 from app.services.cursor_agent_scheduler import cursor_agent_scheduler
 
@@ -65,6 +65,10 @@ app.include_router(indicators.router)
 app.include_router(images.router)
 app.include_router(trading.router)
 app.include_router(crypto_mcp.router)
+
+# X OAuth2：同时挂载根路径与 /tail，适配反代（如 https://do2ge.com/tail → 本服务）
+app.include_router(oauth_x.router)
+app.include_router(oauth_x.router, prefix="/tail")
 
 # 基础路由
 @app.get("/", response_model=HealthResponse)

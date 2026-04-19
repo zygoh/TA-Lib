@@ -1,29 +1,34 @@
 from __future__ import annotations
 
-import base64
 import asyncio
-import hashlib
-import hmac
+import base64
+import json
 import logging
+import mimetypes
 import os
-import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
-from urllib.parse import quote
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import aiohttp
+import requests
+from requests import HTTPError
+from xdk import Client as XdkClient
+from xdk.media.models import AppendUploadRequest, InitializeUploadRequest
+from xdk.oauth1_auth import OAuth1
+from xdk.posts.models import CreateRequest, CreateRequestMedia
 
 logger = logging.getLogger(__name__)
 
 _SH_TZ = ZoneInfo("Asia/Shanghai")
 
 _TG_API_BASE = "https://api.telegram.org"
-_X_API_BASE = "https://api.x.com/2"
-_X_UPLOAD_BASE = "https://upload.twitter.com/1.1"
+_X_MEDIA_UPLOAD_V11 = "https://upload.twitter.com/1.1/media/upload.json"
 _SQUARE_POST_URL = "https://www.binance.com/bapi/composite/v1/public/pgc/openApi/content/add"
 _DOTENV_CACHE: Dict[str, str] | None = None
+
+_X_OAUTH2_SCOPES = ["tweet.read", "tweet.write", "users.read", "media.write", "offline.access"]
 
 
 def _repo_root() -> Path:
@@ -87,45 +92,226 @@ def _resolve_chart_4h_path(symbol_usdt: str) -> str | None:
     return None
 
 
-def _rfc3986(value: str) -> str:
-    return quote(str(value), safe="~")
+def _read_x_client_id() -> str:
+    v, _ = _read_env_with_source("X_CLIENT_ID")
+    if v:
+        return v
+    v, _ = _read_env_with_source("CLIENT_ID")
+    return v
 
 
-def _oauth_authorization_header(
-    method: str,
-    url: str,
-    consumer_key: str,
-    consumer_secret: str,
-    access_token: str,
-    access_token_secret: str,
-    extra_params: Dict[str, str] | None = None,
-) -> str:
-    oauth_params: Dict[str, str] = {
-        "oauth_consumer_key": consumer_key,
-        "oauth_nonce": base64.b16encode(os.urandom(12)).decode("ascii").lower(),
-        "oauth_signature_method": "HMAC-SHA1",
-        "oauth_timestamp": str(int(time.time())),
-        "oauth_token": access_token,
-        "oauth_version": "1.0",
-    }
+def _read_x_client_secret() -> str:
+    v, _ = _read_env_with_source("X_CLIENT_SECRET")
+    if v:
+        return v
+    v, _ = _read_env_with_source("CLIENT_SECRET")
+    return v
 
-    all_params = dict(oauth_params)
-    if extra_params:
-        all_params.update(extra_params)
 
-    param_string = "&".join(
-        f"{_rfc3986(k)}={_rfc3986(v)}" for k, v in sorted(all_params.items(), key=lambda item: item[0])
+def _read_x_redirect_uri() -> str:
+    v, _ = _read_env_with_source("X_REDIRECT_URI")
+    if v:
+        return v
+    v, _ = _read_env_with_source("OAUTH2_REDIRECT_URI")
+    return v if v else "https://127.0.0.1/callback"
+
+
+def _read_oauth2_user_token() -> Optional[Dict[str, Any]]:
+    raw, _ = _read_env_with_source("X_OAUTH2_TOKEN")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            logger.warning("X_OAUTH2_TOKEN present but not valid JSON")
+            return None
+
+    access, _ = _read_env_with_source("X_OAUTH2_ACCESS_TOKEN")
+    if not access:
+        return None
+    token: Dict[str, Any] = {"access_token": access.strip()}
+    refresh, _ = _read_env_with_source("X_OAUTH2_REFRESH_TOKEN")
+    if refresh:
+        token["refresh_token"] = refresh.strip()
+    return token
+
+
+def _guess_image_mime(image_path: str) -> str:
+    mime, _ = mimetypes.guess_type(image_path)
+    if mime and mime.startswith("image/"):
+        return mime
+    return "image/png"
+
+
+def _upload_image_oauth1_v11(client: XdkClient, image_path: str) -> str:
+    """Legacy v1.1 media upload (OAuth 1.0a user context), signed via XDK OAuth1."""
+    if not client.auth:
+        raise RuntimeError("x oauth1 auth missing on client")
+    media_b64 = base64.b64encode(Path(image_path).read_bytes()).decode("utf-8")
+    auth_header = client.auth.build_request_header("POST", _X_MEDIA_UPLOAD_V11, "")
+    resp = requests.post(
+        _X_MEDIA_UPLOAD_V11,
+        data={"media_data": media_b64, "media_category": "tweet_image"},
+        headers={"Authorization": auth_header},
+        timeout=45,
     )
-    signature_base = "&".join([method.upper(), _rfc3986(url), _rfc3986(param_string)])
-    signing_key = f"{_rfc3986(consumer_secret)}&{_rfc3986(access_token_secret)}"
-    signature = base64.b64encode(hmac.new(signing_key.encode("utf-8"), signature_base.encode("utf-8"), hashlib.sha1).digest()).decode(
-        "utf-8"
-    )
+    payload = resp.json() if resp.content else {}
+    if resp.status_code >= 400:
+        raise RuntimeError(f"x media upload failed {resp.status_code}: {payload}")
+    media_id = payload.get("media_id_string")
+    if not media_id:
+        raise RuntimeError(f"x media upload missing media_id_string: {payload}")
+    return str(media_id)
 
-    oauth_params["oauth_signature"] = signature
-    return "OAuth " + ", ".join(
-        f'{_rfc3986(k)}="{_rfc3986(v)}"' for k, v in sorted(oauth_params.items(), key=lambda item: item[0])
+
+def _upload_image_oauth2_v2(client: XdkClient, image_path: str) -> str:
+    """Media Upload v2 with OAuth 2.0 user token (Bearer), aligned with official samples."""
+    raw = Path(image_path).read_bytes()
+    total = len(raw)
+    mime = _guess_image_mime(image_path)
+    init_body = InitializeUploadRequest(
+        total_bytes=total,
+        media_type=mime,
+        media_category="tweet_image",
     )
+    init = client.media.initialize_upload(body=init_body)
+    if init.errors:
+        raise RuntimeError(f"x media initialize failed: {init.errors}")
+    mid = init.data.id if init.data else None
+    if not mid:
+        raise RuntimeError("x media initialize missing id")
+
+    segment_b64 = base64.b64encode(raw).decode("utf-8")
+    append_body = AppendUploadRequest.model_validate({"segment_index": 0, "media": segment_b64})
+    client.media.append_upload(id=mid, body=append_body)
+    fin = client.media.finalize_upload(id=mid)
+    if fin.errors:
+        raise RuntimeError(f"x media finalize failed: {fin.errors}")
+    return str(mid)
+
+
+def _http_error_detail(exc: BaseException) -> Any:
+    if isinstance(exc, HTTPError) and exc.response is not None:
+        try:
+            return exc.response.json()
+        except Exception:
+            return exc.response.text
+    return str(exc)
+
+
+def _send_x_sync(text: str, image_path: str | None) -> Dict[str, Any]:
+    """Post to X using official xdk (OAuth 2.0 preferred; OAuth 1.0a fallback)."""
+    oauth2_token = _read_oauth2_user_token()
+    client_id = _read_x_client_id()
+    client_secret = _read_x_client_secret()
+    redirect_uri = _read_x_redirect_uri()
+
+    consumer_key, _ = _read_env_with_source("X_CONSUMER_KEY")
+    consumer_secret, _ = _read_env_with_source("X_CONSUMER_SECRET")
+    access_token_o1, _ = _read_env_with_source("X_ACCESS_TOKEN")
+    access_token_secret_o1, _ = _read_env_with_source("X_ACCESS_TOKEN_SECRET")
+
+    oauth2_ready = bool(oauth2_token and client_id and client_secret)
+    oauth1_ready = bool(consumer_key and consumer_secret and access_token_o1 and access_token_secret_o1)
+
+    x_credential_check = _credential_snapshot(
+        [
+            "X_CLIENT_ID",
+            "CLIENT_ID",
+            "X_CLIENT_SECRET",
+            "CLIENT_SECRET",
+            "X_REDIRECT_URI",
+            "X_OAUTH2_TOKEN",
+            "X_OAUTH2_ACCESS_TOKEN",
+            "X_OAUTH2_REFRESH_TOKEN",
+            "X_CONSUMER_KEY",
+            "X_CONSUMER_SECRET",
+            "X_ACCESS_TOKEN",
+            "X_ACCESS_TOKEN_SECRET",
+        ]
+    )
+    logger.info("x credential check: %s", x_credential_check)
+
+    if not oauth2_ready and not oauth1_ready:
+        return {
+            "sent": False,
+            "mode": "none",
+            "note": "configure OAuth2 (X_CLIENT_ID, X_CLIENT_SECRET, X_OAUTH2_ACCESS_TOKEN or X_OAUTH2_TOKEN) "
+            "or OAuth1 (X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET)",
+            "credential_check": x_credential_check,
+        }
+
+    client: XdkClient
+    mode_tag: str
+
+    if oauth2_ready:
+        mode_tag = "oauth2+xdk"
+        client = XdkClient(
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+            token=oauth2_token,
+            scope=_X_OAUTH2_SCOPES,
+        )
+        if client.oauth2_auth and oauth2_token.get("refresh_token") and client.is_token_expired():
+            client.refresh_token()
+    else:
+        mode_tag = "oauth1+xdk"
+        oauth1 = OAuth1(
+            api_key=consumer_key,
+            api_secret=consumer_secret,
+            callback=(os.getenv("X_OAUTH1_CALLBACK") or "oob").strip(),
+            access_token=access_token_o1,
+            access_token_secret=access_token_secret_o1,
+        )
+        client = XdkClient(auth=oauth1)
+
+    body: CreateRequest
+    mode = "text"
+    try:
+        if image_path and Path(image_path).is_file():
+            if oauth2_ready:
+                media_id = _upload_image_oauth2_v2(client, image_path)
+            else:
+                media_id = _upload_image_oauth1_v11(client, image_path)
+            body = CreateRequest(text=text, media=CreateRequestMedia(media_ids=[media_id]))
+            mode = "image+text"
+        else:
+            body = CreateRequest(text=text)
+
+        resp = client.posts.create(body=body)
+        payload = resp.model_dump() if hasattr(resp, "model_dump") else resp  # type: ignore[assignment]
+        tweet_id: Any = None
+        if isinstance(payload, dict):
+            tweet_id = (payload.get("data") or {}).get("id")
+        result: Dict[str, Any] = {
+            "sent": True,
+            "mode": mode,
+            "payload": payload,
+            "credential_check": x_credential_check,
+            "auth_mode": mode_tag,
+        }
+        if tweet_id:
+            result["url"] = f"https://x.com/i/status/{tweet_id}"
+        return result
+
+    except (HTTPError, requests.RequestException, ValueError, RuntimeError) as exc:
+        status_code: Optional[int] = None
+        if isinstance(exc, HTTPError) and exc.response is not None:
+            status_code = exc.response.status_code
+        detail = _http_error_detail(exc)
+        auth_note = None
+        if status_code == 401:
+            auth_note = "x auth failed (likely credential/permission mismatch)"
+        return {
+            "sent": False,
+            "mode": mode,
+            "note": f"x post failed http={status_code}" if status_code else f"x post failed: {exc}",
+            "auth_note": auth_note,
+            "payload": detail if not isinstance(detail, str) else {"detail": detail},
+            "credential_check": x_credential_check,
+            "auth_mode": mode_tag,
+        }
 
 
 async def _send_telegram(text: str, image_path: str | None) -> Dict[str, Any]:
@@ -175,122 +361,9 @@ async def _send_telegram(text: str, image_path: str | None) -> Dict[str, Any]:
             return {"sent": False, "mode": "text", "note": "sendMessage failed", "payload": payload}
 
 
-async def _x_upload_media(
-    session: aiohttp.ClientSession,
-    image_path: str,
-    consumer_key: str,
-    consumer_secret: str,
-    access_token: str,
-    access_token_secret: str,
-) -> str:
-    media_url = f"{_X_UPLOAD_BASE}/media/upload.json"
-    image_data = Path(image_path).read_bytes()
-    media_b64 = base64.b64encode(image_data).decode("utf-8")
-
-    auth = _oauth_authorization_header(
-        method="POST",
-        url=media_url,
-        consumer_key=consumer_key,
-        consumer_secret=consumer_secret,
-        access_token=access_token,
-        access_token_secret=access_token_secret,
-    )
-
-    form = aiohttp.FormData()
-    form.add_field("media_data", media_b64)
-    form.add_field("media_category", "tweet_image")
-    async with session.post(media_url, data=form, headers={"Authorization": auth}) as resp:
-        payload = await resp.json(content_type=None)
-        if resp.status >= 400:
-            raise RuntimeError(f"x media upload failed {resp.status}: {payload}")
-        media_id = payload.get("media_id_string")
-        if not media_id:
-            raise RuntimeError(f"x media upload missing media_id_string: {payload}")
-        return str(media_id)
-
-
 async def _send_x(text: str, image_path: str | None) -> Dict[str, Any]:
-    consumer_key, _ = _read_env_with_source("X_CONSUMER_KEY")
-    consumer_secret, _ = _read_env_with_source("X_CONSUMER_SECRET")
-    access_token, _ = _read_env_with_source("X_ACCESS_TOKEN")
-    access_token_secret, _ = _read_env_with_source("X_ACCESS_TOKEN_SECRET")
-    x_credential_check = _credential_snapshot(
-        [
-            "X_CONSUMER_KEY",
-            "X_CONSUMER_SECRET",
-            "X_ACCESS_TOKEN",
-            "X_ACCESS_TOKEN_SECRET",
-        ]
-    )
-    logger.info("x credential check: %s", x_credential_check)
-
-    if not all([consumer_key, consumer_secret, access_token, access_token_secret]):
-        return {
-            "sent": False,
-            "mode": "none",
-            "note": "missing X_CONSUMER_KEY/X_CONSUMER_SECRET/X_ACCESS_TOKEN/X_ACCESS_TOKEN_SECRET",
-            "credential_check": x_credential_check,
-        }
-
-    timeout = aiohttp.ClientTimeout(total=45)
-    async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-        body: Dict[str, Any] = {"text": text}
-        mode = "text"
-
-        if image_path and Path(image_path).is_file():
-            try:
-                media_id = await _x_upload_media(
-                    session,
-                    image_path,
-                    consumer_key,
-                    consumer_secret,
-                    access_token,
-                    access_token_secret,
-                )
-                body["media"] = {"media_ids": [media_id]}
-                mode = "image+text"
-            except Exception as exc:  # noqa: BLE001
-                return {
-                    "sent": False,
-                    "mode": "image+text",
-                    "note": f"x media upload failed: {exc}",
-                    "credential_check": x_credential_check,
-                }
-
-        tweet_url = f"{_X_API_BASE}/tweets"
-        auth = _oauth_authorization_header(
-            method="POST",
-            url=tweet_url,
-            consumer_key=consumer_key,
-            consumer_secret=consumer_secret,
-            access_token=access_token,
-            access_token_secret=access_token_secret,
-        )
-        async with session.post(
-            tweet_url,
-            json=body,
-            headers={
-                "Authorization": auth,
-                "Content-Type": "application/json; charset=utf-8",
-            },
-        ) as resp:
-            payload = await resp.json(content_type=None)
-            if resp.status >= 400:
-                auth_note = "x auth failed (likely credential/permission mismatch)" if resp.status == 401 else None
-                return {
-                    "sent": False,
-                    "mode": mode,
-                    "note": f"x post failed http={resp.status}",
-                    "auth_note": auth_note,
-                    "payload": payload,
-                    "credential_check": x_credential_check,
-                }
-            tweet_id = payload.get("data", {}).get("id")
-            result: Dict[str, Any] = {"sent": True, "mode": mode, "payload": payload}
-            if tweet_id:
-                result["url"] = f"https://x.com/i/status/{tweet_id}"
-            result["credential_check"] = x_credential_check
-            return result
+    """X API via xdk (blocking client runs in a thread pool)."""
+    return await asyncio.to_thread(_send_x_sync, text, image_path)
 
 
 async def _send_square(text: str) -> Dict[str, Any]:
