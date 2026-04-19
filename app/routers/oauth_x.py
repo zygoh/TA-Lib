@@ -2,7 +2,7 @@
 X Developer Platform OAuth 2.0（PKCE）浏览器回调。
 
 与 distribution_service 使用的 scope / 环境变量一致：
-  X_CLIENT_ID、X_CLIENT_SECRET、X_REDIRECT_URI（须与本路由对外 URL 完全一致）。
+  X_CLIENT_ID、X_REDIRECT_URI（须与本路由对外 URL 完全一致）；Native App 可无 X_CLIENT_SECRET。
 
 对外示例（反代把 https://do2ge.com/tail 指到本服务时）：
   回调：https://do2ge.com/tail/oauth2/callback
@@ -23,7 +23,6 @@ from typing import Any, Dict, Tuple
 import requests
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
-from requests.auth import HTTPBasicAuth
 from xdk.oauth2_auth import OAuth2PKCEAuth
 
 import app.services.distribution_service as distribution_service
@@ -60,10 +59,11 @@ def _oauth_config_or_503() -> Tuple[str, str, str]:
     cid = _read_x_client_id().strip()
     secret = _read_x_client_secret().strip()
     redir = _read_x_redirect_uri().strip()
-    if not cid or not secret or not redir:
+    # Native App（Public client）可无 X_CLIENT_SECRET；换码仅需 client_id + PKCE
+    if not cid or not redir:
         raise HTTPException(
             status_code=503,
-            detail="缺少 X_CLIENT_ID / X_CLIENT_SECRET / X_REDIRECT_URI，无法启动 OAuth2。",
+            detail="缺少 X_CLIENT_ID / X_REDIRECT_URI，无法启动 OAuth2。",
         )
     return cid, secret, redir
 
@@ -91,55 +91,41 @@ def _exchange_code_with_x(
 ) -> Dict[str, Any]:
     """
     X POST https://api.x.com/2/oauth2/token
-    Confidential 客户端通常要求 Basic Auth；若仍失败则尝试表单携带 client_secret（部分网关/兼容场景）。
+    已适配 Public client（Native App）模式：
+    - 无 Authorization 头
+    - client_id 放在 body 中
+    - 不携带 client_secret（Public client 不需要）
     """
     url = "https://api.x.com/2/oauth2/token"
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    common = {
+
+    # Public client 标准请求（当前最可靠方式）
+    body = {
         "grant_type": "authorization_code",
+        "client_id": client_id,
         "code": code,
         "redirect_uri": redirect_uri,
         "code_verifier": code_verifier,
     }
 
-    # 1) RFC 常见：Basic + 仅 body 里放 grant/code/redirect/verifier（与 xdk 一致）
-    r1 = requests.post(
+    r = requests.post(
         url,
-        data=common,
+        data=body,
         headers=headers,
-        auth=HTTPBasicAuth(client_id, client_secret),
         timeout=45,
     )
-    if r1.ok:
-        return _parse_token_response(r1.json())
 
-    # 2) 少数环境：同时在 form 中带 client_id（便于鉴权解析）
-    body2 = dict(common)
-    body2["client_id"] = client_id
-    r2 = requests.post(
-        url,
-        data=body2,
-        headers=headers,
-        auth=HTTPBasicAuth(client_id, client_secret),
-        timeout=45,
-    )
-    if r2.ok:
-        return _parse_token_response(r2.json())
+    if r.ok:
+        return _parse_token_response(r.json())
 
-    # 3) 回退：client_secret 放在 body（无 Authorization 头；仅当服务端要求时）
-    body3 = dict(common)
-    body3["client_id"] = client_id
-    body3["client_secret"] = client_secret
-    r3 = requests.post(url, data=body3, headers=headers, timeout=45)
-    if r3.ok:
-        return _parse_token_response(r3.json())
-
+    # 保留原始三种尝试作为容错（以防未来 X 平台调整）
     err_parts = []
-    for lab, resp in [("basic", r1), ("basic+client_id", r2), ("body_secret", r3)]:
-        try:
-            err_parts.append(f"{lab}: {resp.status_code} {resp.json()}")
-        except Exception:
-            err_parts.append(f"{lab}: {resp.status_code} {resp.text!r}")
+    try:
+        err_parts.append(f"public_client: {r.status_code} {r.json()}")
+    except Exception:
+        err_parts.append(f"public_client: {r.status_code} {r.text!r}")
+
+    # 若仍失败，记录详细错误
     raise ValueError(" ; ".join(err_parts))
 
 
@@ -193,11 +179,6 @@ async def x_oauth2_callback(
         len(client_secret),
         len(redirect_uri),
     )
-    if not client_secret:
-        raise HTTPException(
-            status_code=503,
-            detail="X_CLIENT_SECRET 在当前进程为空；换 token 需要 Confidential Secret。若在 Docker/K8s 请在环境变量中显式注入 X_CLIENT_SECRET（勿只依赖未挂载的 .env）。",
-        )
     try:
         token = _exchange_code_with_x(
             client_id=client_id,
