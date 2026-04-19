@@ -18,12 +18,15 @@ import json
 import logging
 import secrets
 import time
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 
+import requests
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
+from requests.auth import HTTPBasicAuth
 from xdk.oauth2_auth import OAuth2PKCEAuth
 
+import app.services.distribution_service as distribution_service
 from app.services.distribution_service import (
     _read_x_client_id,
     _read_x_client_secret,
@@ -39,6 +42,11 @@ _X_OAUTH2_SCOPES = ["tweet.read", "tweet.write", "users.read", "media.write", "o
 # state -> (code_verifier, expiry_unix)；单 worker 内存存储；多 worker 需换 Redis 等
 _PKCE_TTL_SEC = 600
 _pkce_store: Dict[str, Tuple[str, float]] = {}
+
+
+def _invalidate_dotenv_cache() -> None:
+    """避免 .env 在进程启动后变更、或多 worker 下缓存不一致导致读不到 Secret。"""
+    distribution_service._DOTENV_CACHE = None  # noqa: SLF001
 
 
 def _prune_pkce_store() -> None:
@@ -60,8 +68,84 @@ def _oauth_config_or_503() -> Tuple[str, str, str]:
     return cid, secret, redir
 
 
+def _parse_token_response(data: Dict[str, Any]) -> Dict[str, Any]:
+    token: Dict[str, Any] = {
+        "access_token": data.get("access_token"),
+        "token_type": data.get("token_type"),
+        "expires_in": data.get("expires_in"),
+        "refresh_token": data.get("refresh_token"),
+        "scope": data.get("scope"),
+    }
+    if data.get("expires_in"):
+        token["expires_at"] = time.time() + int(data["expires_in"])
+    return token
+
+
+def _exchange_code_with_x(
+    *,
+    client_id: str,
+    client_secret: str,
+    redirect_uri: str,
+    code: str,
+    code_verifier: str,
+) -> Dict[str, Any]:
+    """
+    X POST https://api.x.com/2/oauth2/token
+    Confidential 客户端通常要求 Basic Auth；若仍失败则尝试表单携带 client_secret（部分网关/兼容场景）。
+    """
+    url = "https://api.x.com/2/oauth2/token"
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    common = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "code_verifier": code_verifier,
+    }
+
+    # 1) RFC 常见：Basic + 仅 body 里放 grant/code/redirect/verifier（与 xdk 一致）
+    r1 = requests.post(
+        url,
+        data=common,
+        headers=headers,
+        auth=HTTPBasicAuth(client_id, client_secret),
+        timeout=45,
+    )
+    if r1.ok:
+        return _parse_token_response(r1.json())
+
+    # 2) 少数环境：同时在 form 中带 client_id（便于鉴权解析）
+    body2 = dict(common)
+    body2["client_id"] = client_id
+    r2 = requests.post(
+        url,
+        data=body2,
+        headers=headers,
+        auth=HTTPBasicAuth(client_id, client_secret),
+        timeout=45,
+    )
+    if r2.ok:
+        return _parse_token_response(r2.json())
+
+    # 3) 回退：client_secret 放在 body（无 Authorization 头；仅当服务端要求时）
+    body3 = dict(common)
+    body3["client_id"] = client_id
+    body3["client_secret"] = client_secret
+    r3 = requests.post(url, data=body3, headers=headers, timeout=45)
+    if r3.ok:
+        return _parse_token_response(r3.json())
+
+    err_parts = []
+    for lab, resp in [("basic", r1), ("basic+client_id", r2), ("body_secret", r3)]:
+        try:
+            err_parts.append(f"{lab}: {resp.status_code} {resp.json()}")
+        except Exception:
+            err_parts.append(f"{lab}: {resp.status_code} {resp.text!r}")
+    raise ValueError(" ; ".join(err_parts))
+
+
 @router.get("/oauth2/start", summary="跳转 X 授权页（PKCE）")
 async def x_oauth2_start() -> RedirectResponse:
+    _invalidate_dotenv_cache()
     _prune_pkce_store()
     client_id, client_secret, redirect_uri = _oauth_config_or_503()
     auth = OAuth2PKCEAuth(
@@ -95,6 +179,7 @@ async def x_oauth2_callback(
     if not code or not state:
         raise HTTPException(status_code=400, detail="缺少 code 或 state 参数")
 
+    _invalidate_dotenv_cache()
     _prune_pkce_store()
     item = _pkce_store.pop(state, None)
     if not item or time.time() > item[1]:
@@ -102,14 +187,25 @@ async def x_oauth2_callback(
     code_verifier, _ = item
 
     client_id, client_secret, redirect_uri = _oauth_config_or_503()
-    auth = OAuth2PKCEAuth(
-        client_id=client_id,
-        client_secret=client_secret,
-        redirect_uri=redirect_uri,
-        scope=_X_OAUTH2_SCOPES,
+    logger.info(
+        "x oauth2 callback: exchanging code (client_id len=%s, secret len=%s, redirect len=%s)",
+        len(client_id),
+        len(client_secret),
+        len(redirect_uri),
     )
+    if not client_secret:
+        raise HTTPException(
+            status_code=503,
+            detail="X_CLIENT_SECRET 在当前进程为空；换 token 需要 Confidential Secret。若在 Docker/K8s 请在环境变量中显式注入 X_CLIENT_SECRET（勿只依赖未挂载的 .env）。",
+        )
     try:
-        token = auth.exchange_code(code, code_verifier=code_verifier)
+        token = _exchange_code_with_x(
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+            code=code,
+            code_verifier=code_verifier,
+        )
     except ValueError as exc:
         logger.warning("x oauth2 token exchange failed: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
