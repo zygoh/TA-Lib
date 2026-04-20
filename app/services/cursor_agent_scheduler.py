@@ -66,6 +66,7 @@ def _build_prompt(symbol: str) -> str:
         "7. Final output should only be a distribution result summary.",
         "8. The summary must include overall status (success/partial/failed) and per-channel states for telegram/x/square.",
         "9. If any channel fails, include a concise failure reason for that channel.",
+        "10. Do NOT retry automatically at any stage or channel; if a failure occurs, report it once and stop.",
     ]
     return "\n".join(lines)
 
