@@ -193,6 +193,7 @@ async def x_oauth2_callback(
 
     token_json = json.dumps(token, ensure_ascii=False, separators=(",", ":"))
     safe_json = html.escape(token_json)
+    distribution_service._persist_oauth2_token(token, reason="oauth2_callback")  # noqa: SLF001
     logger.info("x oauth2 callback: token exchange ok")
 
     body = f"""<!DOCTYPE html>
@@ -200,9 +201,11 @@ async def x_oauth2_callback(
 <head><meta charset="utf-8"/><title>X OAuth2 成功</title></head>
 <body>
 <h1>X OAuth2 授权成功</h1>
-<p>请将下面<strong>单行 JSON</strong>复制到 <code>TA-Lib/.env</code> 的 <code>X_OAUTH2_TOKEN=</code> 之后（不要换行）：</p>
+<p>Token 已自动写入服务进程环境与 <code>TA-Lib/.env</code>，无需手工复制或重启。</p>
+<p>当前 token（只读展示）：</p>
 <p><textarea readonly rows="8" cols="120">{safe_json}</textarea></p>
-<p>或拆分填写：</p>
+<p>若你在多副本部署，请将同样配置同步到其它实例。</p>
+<p>同步的键包括：</p>
 <ul>
 <li><code>X_OAUTH2_ACCESS_TOKEN</code> = access_token</li>
 <li><code>X_OAUTH2_REFRESH_TOKEN</code> = refresh_token（若有）</li>

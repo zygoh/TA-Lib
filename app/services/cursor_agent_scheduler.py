@@ -59,7 +59,7 @@ def _build_prompt(symbol: str) -> str:
         "1. Use only real market data. If data fails, report the exact failure point.",
         "2. Stage 1 only produces draft_text; DO NOT call distribute-post from the analyst skill.",
         "3. Stage 2 must rewrite the draft into final_text with ZERO changes to facts "
-        "(price, direction, support/resistance, KOL IDs, timestamp, hashtag).",
+        "(price, direction, support/resistance, KOL IDs, hashtag).",
         "4. Stage 3 must receive final_text (not draft_text) and dispatch to telegram/x/square.",
         "5. Strictly follow the writing and behavior rules inside each skill file.",
         "6. Output language must be Simplified Chinese.",

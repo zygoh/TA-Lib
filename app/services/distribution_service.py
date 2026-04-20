@@ -35,6 +35,10 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _repo_env_path() -> Path:
+    return _repo_root() / ".env"
+
+
 def _load_repo_dotenv() -> Dict[str, str]:
     global _DOTENV_CACHE
     if _DOTENV_CACHE is not None:
@@ -53,6 +57,59 @@ def _load_repo_dotenv() -> Dict[str, str]:
                 env_map[key] = value.strip()
     _DOTENV_CACHE = env_map
     return env_map
+
+
+def _upsert_repo_env(name: str, value: str) -> None:
+    env_path = _repo_env_path()
+    lines: List[str] = []
+    if env_path.is_file():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+
+    prefix = f"{name}="
+    replaced = False
+    new_lines: List[str] = []
+    for line in lines:
+        if line.startswith(prefix):
+            new_lines.append(f"{name}={value}")
+            replaced = True
+        else:
+            new_lines.append(line)
+    if not replaced:
+        if new_lines and new_lines[-1].strip():
+            new_lines.append("")
+        new_lines.append(f"{name}={value}")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+def _persist_oauth2_token(token: Dict[str, Any], reason: str) -> None:
+    access_token = str(token.get("access_token") or "").strip()
+    if not access_token:
+        logger.warning("skip persisting oauth2 token: missing access_token (reason=%s)", reason)
+        return
+
+    normalized: Dict[str, Any] = {
+        "access_token": access_token,
+        "token_type": token.get("token_type"),
+        "expires_in": token.get("expires_in"),
+        "refresh_token": token.get("refresh_token"),
+        "scope": token.get("scope"),
+        "expires_at": token.get("expires_at"),
+    }
+    token_json = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+
+    os.environ["X_OAUTH2_TOKEN"] = token_json
+    _upsert_repo_env("X_OAUTH2_TOKEN", token_json)
+
+    refresh_token = str(token.get("refresh_token") or "").strip()
+    os.environ["X_OAUTH2_ACCESS_TOKEN"] = access_token
+    _upsert_repo_env("X_OAUTH2_ACCESS_TOKEN", access_token)
+    if refresh_token:
+        os.environ["X_OAUTH2_REFRESH_TOKEN"] = refresh_token
+        _upsert_repo_env("X_OAUTH2_REFRESH_TOKEN", refresh_token)
+
+    global _DOTENV_CACHE
+    _DOTENV_CACHE = None
+    logger.info("persisted oauth2 token to .env and process env (reason=%s)", reason)
 
 
 def _read_env_with_source(name: str) -> Tuple[str, str]:
@@ -243,19 +300,39 @@ def _send_x_sync(text: str, image_path: str | None) -> Dict[str, Any]:
 
     client: XdkClient
     mode_tag: str
+    use_oauth2 = False
 
     if oauth2_ready:
-        mode_tag = "oauth2+xdk"
-        client = XdkClient(
-            client_id=client_id,
-            client_secret=client_secret,
-            redirect_uri=redirect_uri,
-            token=oauth2_token,
-            scope=_X_OAUTH2_SCOPES,
-        )
-        if client.oauth2_auth and oauth2_token.get("refresh_token") and client.is_token_expired():
-            client.refresh_token()
-    else:
+        try:
+            mode_tag = "oauth2+xdk"
+            client = XdkClient(
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=redirect_uri,
+                token=oauth2_token,
+                scope=_X_OAUTH2_SCOPES,
+            )
+            use_oauth2 = True
+            if client.oauth2_auth and oauth2_token.get("refresh_token") and client.is_token_expired():
+                refreshed = client.refresh_token()
+                if isinstance(refreshed, dict):
+                    _persist_oauth2_token(refreshed, reason="refresh")
+                elif isinstance(client.token, dict):
+                    _persist_oauth2_token(client.token, reason="refresh")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("x oauth2 init/refresh failed, fallback=%s, err=%s", oauth1_ready, exc)
+            use_oauth2 = False
+            if not oauth1_ready:
+                return {
+                    "sent": False,
+                    "mode": "none",
+                    "note": f"x oauth2 refresh/init failed and oauth1 unavailable: {exc}",
+                    "credential_check": x_credential_check,
+                    "auth_mode": "oauth2+xdk",
+                    "payload": {"detail": str(exc)},
+                }
+
+    if not use_oauth2:
         mode_tag = "oauth1+xdk"
         oauth1 = OAuth1(
             api_key=consumer_key,
@@ -270,7 +347,7 @@ def _send_x_sync(text: str, image_path: str | None) -> Dict[str, Any]:
     mode = "text"
     try:
         if image_path and Path(image_path).is_file():
-            if oauth2_ready:
+            if use_oauth2:
                 media_id = _upload_image_oauth2_v2(client, image_path)
             else:
                 media_id = _upload_image_oauth1_v11(client, image_path)
@@ -309,6 +386,15 @@ def _send_x_sync(text: str, image_path: str | None) -> Dict[str, Any]:
             "note": f"x post failed http={status_code}" if status_code else f"x post failed: {exc}",
             "auth_note": auth_note,
             "payload": detail if not isinstance(detail, str) else {"detail": detail},
+            "credential_check": x_credential_check,
+            "auth_mode": mode_tag,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "sent": False,
+            "mode": mode,
+            "note": f"x post failed: {exc}",
+            "payload": {"detail": str(exc)},
             "credential_check": x_credential_check,
             "auth_mode": mode_tag,
         }
@@ -432,7 +518,18 @@ async def distribute_post(
         _send_telegram(text, use_chart_4h),
         _send_x(text, use_chart_4h),
         _send_square(text),
+        return_exceptions=True,
     )
+
+    if isinstance(telegram_result, Exception):
+        logger.exception("telegram channel crashed: %s", telegram_result)
+        telegram_result = {"sent": False, "mode": "none", "note": f"telegram exception: {telegram_result}"}
+    if isinstance(x_result, Exception):
+        logger.exception("x channel crashed: %s", x_result)
+        x_result = {"sent": False, "mode": "none", "note": f"x exception: {x_result}"}
+    if isinstance(square_result, Exception):
+        logger.exception("square channel crashed: %s", square_result)
+        square_result = {"sent": False, "mode": "none", "note": f"square exception: {square_result}"}
 
     telegram_sent = bool(telegram_result.get("sent"))
     x_sent = bool(x_result.get("sent"))
