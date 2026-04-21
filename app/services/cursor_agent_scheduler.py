@@ -13,6 +13,7 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 CURSOR_API_URL = "https://api.cursor.com/v0/agents"
+_TG_API_BASE = "https://api.telegram.org"
 
 
 def _parse_hhmm(value: str, default: tuple[int, int]) -> tuple[int, int]:
@@ -38,37 +39,73 @@ def _bool_env(name: str, default: bool) -> bool:
     return value.strip().lower() not in {"0", "false", "off", "no"}
 
 
+def _first_env(*names: str) -> str:
+    for name in names:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _build_prompt(symbol: str) -> str:
     flow_path = "skills/crypto-post-flow/SKILL.md"
-    analyst_path = (
-        "skills/btc-crypto-analyst/SKILL.md"
-        if symbol == "BTC"
-        else "skills/eth-crypto-analyst/SKILL.md"
-    )
-    rewriter_path = "skills/threedogs-trader-skill/SKILL.md"
-    distribute_path = "skills/distribute-post/SKILL.md"
     lines = [
         f"Please execute {flow_path} from this repository directly with symbol={symbol}.",
         "",
-        "Pipeline is fixed to three stages, executed strictly in order:",
-        f"  Stage 1 (analyst):   {analyst_path}",
-        f"  Stage 2 (rewriter):  {rewriter_path}  (skill name: threedogs-crypto-rewriter)",
-        f"  Stage 3 (distribute):{distribute_path}",
+        "The flow file itself defines the stages, sub-skills, input/output contracts, "
+        "short-circuit rules, and the final return format. Follow it as-is; do NOT "
+        "re-plan or second-guess the pipeline here.",
         "",
-        "Requirements:",
-        "1. Use only real market data. If data fails, report the exact failure point.",
-        "2. Stage 1 only produces draft_text; DO NOT call distribute-post from the analyst skill.",
-        "3. Stage 2 must rewrite the draft into final_text with ZERO changes to facts "
-        "(price, direction, support/resistance, KOL IDs, hashtag).",
-        "4. Stage 3 must receive final_text (not draft_text) and dispatch to telegram/x/square.",
-        "5. Strictly follow the writing and behavior rules inside each skill file.",
-        "6. Output language must be Simplified Chinese.",
-        "7. Final output should only be a distribution result summary.",
-        "8. The summary must include overall status (success/partial/failed) and per-channel states for telegram/x/square.",
-        "9. If any channel fails, include a concise failure reason for that channel.",
-        "10. Do NOT retry automatically at any stage or channel; if a failure occurs, report it once and stop.",
+        "Scheduler-level constraints (not covered by the flow):",
+        "1. Output language must be Simplified Chinese.",
+        "2. Do NOT retry automatically at any stage or channel; on failure, report once and stop.",
+        "3. Your final reply back to the scheduler must be only the flow's distribution-result "
+        "summary (overall status + per-channel states; include a concise reason for any failed channel).",
     ]
     return "\n".join(lines)
+
+
+async def _notify_admin(text: str) -> None:
+    """把一条失败通知发给管理员 Telegram。
+
+    覆盖范围仅限"调度触发失败"——也就是 scheduler 调用 Cursor Agent API 这一层
+    出错的场景。Agent 启动后内部阶段失败（例如 Stage 3 某渠道 token 过期），
+    调度器看不到，那部分依赖 flow 自身的摘要回报。
+
+    任何网络/配置错误都只 log，不向上抛，避免反过来把调度协程带崩。
+    """
+
+    token = _first_env("TG_BOT_TOKEN", "TELEGRAM_BOT_TOKEN")
+    chat_id = _first_env("TG_ADMIN_CHAT_ID", "TG_CHAT_ID", "TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        logger.warning(
+            "未配置管理员 Telegram（需要 TG_BOT_TOKEN + TG_ADMIN_CHAT_ID 或 TG_CHAT_ID），跳过失败通知"
+        )
+        return
+
+    body = {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
+    url = f"{_TG_API_BASE}/bot{token}/sendMessage"
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with session.post(
+                url,
+                json=body,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+            ) as resp:
+                if resp.status >= 400:
+                    payload = await resp.text()
+                    logger.warning(
+                        "管理员 Telegram 通知失败 status=%s body=%s",
+                        resp.status,
+                        payload[:200],
+                    )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("管理员 Telegram 通知发送异常: %s", exc)
 
 
 @dataclass(slots=True)
@@ -193,6 +230,12 @@ class CursorAgentScheduler:
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.error("Cursor Agent 执行失败 symbol=%s: %s", symbol, exc)
+                await _notify_admin(
+                    f"[cursor-agent-scheduler] 调度触发失败\n"
+                    f"symbol={symbol}\n"
+                    f"schedule={hour:02d}:{minute:02d} {self._config.timezone}\n"
+                    f"reason={exc}"
+                )
 
 
 cursor_agent_scheduler = CursorAgentScheduler()
