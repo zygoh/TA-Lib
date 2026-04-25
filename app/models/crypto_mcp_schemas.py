@@ -57,11 +57,6 @@ class CryptoMcpAllResponse(BaseModel):
     bundle: CryptoBundleResponse
 
 
-class DistributeRequest(BaseModel):
-    symbol: str = Field(..., min_length=1, description="BTC / ETH（可带USDT后缀）")
-    text: str = Field(..., min_length=1, description="待分发正文")
-
-
 class DistributeResponse(BaseModel):
     status: str = Field(..., description="success / partial / failed")
     symbol: str

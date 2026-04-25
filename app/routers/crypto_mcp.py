@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 import logging
 import asyncio
 import time
@@ -14,7 +15,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.models.crypto_mcp_schemas import (
@@ -25,7 +26,6 @@ from app.models.crypto_mcp_schemas import (
     TimeResponse,
     ChartsResponse,
     CryptoMcpAllResponse,
-    DistributeRequest,
     DistributeResponse,
 )
 from app.services.crypto_mcp_service import (
@@ -62,6 +62,14 @@ def _normalize_grok_base_symbol(symbol: str) -> str:
         status_code=400,
         detail="SYMBOL 仅支持 BTC 或 ETH（可带 USDT 后缀，如 BTCUSDT）",
     )
+
+
+def _looks_like_image_upload(image: UploadFile) -> bool:
+    content_type = (image.content_type or "").lower()
+    if content_type.startswith("image/"):
+        return True
+    guessed, _ = mimetypes.guess_type(image.filename or "")
+    return bool(guessed and guessed.startswith("image/"))
 
 
 # Grok 任务状态：内存中维护，进程级别共享
@@ -295,27 +303,45 @@ async def all_in_one(symbol: str):
 
 
 @router.post("/distribute", response_model=DistributeResponse)
-async def distribute(body: DistributeRequest):
+async def distribute(
+    symbol: str = Form(..., min_length=1, description="BTC / ETH（可带USDT后缀）"),
+    text: str = Form(..., min_length=1, description="待分发正文"),
+    image: UploadFile | None = File(None, description="可选图片文件，支持常见 image/* 类型"),
+):
     """
     单接口统一分发到 Telegram / X / Binance Square。
     - TG 与 X：优先图文，缺图降级纯文本
     - Square：仅文本
     """
-    target = ensure_symbol_usdt(body.symbol)
-    try:
-        # 尽量保证 4h 图存在；失败不阻断分发。
-        await generate_kline_charts(target)
-    except Exception as e:
-        logger.warning("distribute 预生成图表失败 symbol=%s: %s", target, e)
+    target = ensure_symbol_usdt(symbol)
+    clean_text = text.strip()
+    if not clean_text:
+        raise HTTPException(status_code=400, detail="text 不能为空")
+
+    image_bytes: bytes | None = None
+    image_filename: str | None = None
+    image_content_type: str | None = None
+    if image is not None:
+        if not _looks_like_image_upload(image):
+            raise HTTPException(status_code=400, detail="image 必须是图片文件")
+        image_bytes = await image.read()
+        if not image_bytes:
+            raise HTTPException(status_code=400, detail="image 不能为空")
+        image_filename = image.filename or "upload.png"
+        image_content_type = image.content_type
 
     result = await distribute_post(
         symbol_usdt=target,
-        text=body.text,
+        text=clean_text,
+        image_bytes=image_bytes,
+        image_filename=image_filename,
+        image_content_type=image_content_type,
     )
     logger.info(
-        "distribute api symbol=%s status=%s tg=%s x=%s square=%s",
+        "distribute api symbol=%s status=%s has_image=%s tg=%s x=%s square=%s",
         target,
         result.get("status"),
+        bool(image_bytes),
         result.get("telegram_sent"),
         result.get("x_sent"),
         result.get("square_sent"),

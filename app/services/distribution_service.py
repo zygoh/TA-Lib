@@ -6,10 +6,8 @@ import json
 import logging
 import mimetypes
 import os
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from zoneinfo import ZoneInfo
 
 import aiohttp
 import requests
@@ -20,8 +18,6 @@ from xdk.oauth1_auth import OAuth1
 from xdk.posts.models import CreateRequest, CreateRequestMedia
 
 logger = logging.getLogger(__name__)
-
-_SH_TZ = ZoneInfo("Asia/Shanghai")
 
 _TG_API_BASE = "https://api.telegram.org"
 _X_MEDIA_UPLOAD_V11 = "https://upload.twitter.com/1.1/media/upload.json"
@@ -131,24 +127,6 @@ def _credential_snapshot(names: List[str]) -> Dict[str, Dict[str, Any]]:
     return snapshot
 
 
-def _resolve_chart_4h_path(symbol_usdt: str) -> str | None:
-    base_symbol = symbol_usdt.replace("USDT", "").upper()
-    date_str = datetime.now(_SH_TZ).strftime("%Y-%m-%d")
-    image_root = _repo_root() / "image"
-    candidate = image_root / f"{base_symbol}_{date_str}" / f"{base_symbol}_4h.png"
-    logger.info(
-        "distribute chart lookup symbol=%s base_dir=%s candidate=%s",
-        symbol_usdt,
-        image_root,
-        candidate,
-    )
-    if candidate.is_file():
-        logger.info("distribute chart resolved symbol=%s path=%s", symbol_usdt, candidate)
-        return str(candidate)
-    logger.warning("distribute chart missing symbol=%s candidate=%s", symbol_usdt, candidate)
-    return None
-
-
 def _read_x_client_id() -> str:
     v, _ = _read_env_with_source("X_CLIENT_ID")
     if v:
@@ -193,18 +171,34 @@ def _read_oauth2_user_token() -> Optional[Dict[str, Any]]:
     return token
 
 
-def _guess_image_mime(image_path: str) -> str:
-    mime, _ = mimetypes.guess_type(image_path)
+def _guess_image_mime(image_filename: str | None, image_content_type: str | None = None) -> str:
+    if image_content_type and image_content_type.startswith("image/"):
+        return image_content_type
+    mime, _ = mimetypes.guess_type(image_filename or "")
     if mime and mime.startswith("image/"):
         return mime
     return "image/png"
 
 
-def _upload_image_oauth1_v11(client: XdkClient, image_path: str) -> str:
+def _normalize_image_filename(image_filename: str | None, image_content_type: str | None = None) -> str:
+    filename = Path((image_filename or "").strip() or "upload.png").name
+    if "." not in filename:
+        guessed_ext = mimetypes.guess_extension(_guess_image_mime(filename, image_content_type)) or ".png"
+        filename = f"{filename}{guessed_ext}"
+    return filename
+
+
+def _append_note(notes: List[str], note: str | None) -> None:
+    clean_note = (note or "").strip()
+    if clean_note and clean_note not in notes:
+        notes.append(clean_note)
+
+
+def _upload_image_oauth1_v11(client: XdkClient, image_bytes: bytes) -> str:
     """Legacy v1.1 media upload (OAuth 1.0a user context), signed via XDK OAuth1."""
     if not client.auth:
         raise RuntimeError("x oauth1 auth missing on client")
-    media_b64 = base64.b64encode(Path(image_path).read_bytes()).decode("utf-8")
+    media_b64 = base64.b64encode(image_bytes).decode("utf-8")
     auth_header = client.auth.build_request_header("POST", _X_MEDIA_UPLOAD_V11, "")
     resp = requests.post(
         _X_MEDIA_UPLOAD_V11,
@@ -221,14 +215,12 @@ def _upload_image_oauth1_v11(client: XdkClient, image_path: str) -> str:
     return str(media_id)
 
 
-def _upload_image_oauth2_v2(client: XdkClient, image_path: str) -> str:
+def _upload_image_oauth2_v2(client: XdkClient, image_bytes: bytes, image_content_type: str) -> str:
     """Media Upload v2 with OAuth 2.0 user token (Bearer), aligned with official samples."""
-    raw = Path(image_path).read_bytes()
-    total = len(raw)
-    mime = _guess_image_mime(image_path)
+    total = len(image_bytes)
     init_body = InitializeUploadRequest(
         total_bytes=total,
-        media_type=mime,
+        media_type=image_content_type,
         media_category="tweet_image",
     )
     init = client.media.initialize_upload(body=init_body)
@@ -238,7 +230,7 @@ def _upload_image_oauth2_v2(client: XdkClient, image_path: str) -> str:
     if not mid:
         raise RuntimeError("x media initialize missing id")
 
-    segment_b64 = base64.b64encode(raw).decode("utf-8")
+    segment_b64 = base64.b64encode(image_bytes).decode("utf-8")
     append_body = AppendUploadRequest.model_validate({"segment_index": 0, "media": segment_b64})
     client.media.append_upload(id=mid, body=append_body)
     fin = client.media.finalize_upload(id=mid)
@@ -256,7 +248,12 @@ def _http_error_detail(exc: BaseException) -> Any:
     return str(exc)
 
 
-def _send_x_sync(text: str, image_path: str | None) -> Dict[str, Any]:
+def _send_x_sync(
+    text: str,
+    image_bytes: bytes | None,
+    image_filename: str | None,
+    image_content_type: str | None,
+) -> Dict[str, Any]:
     """Post to X using official xdk (OAuth 2.0 preferred; OAuth 1.0a fallback)."""
     oauth2_token = _read_oauth2_user_token()
     client_id = _read_x_client_id()
@@ -346,11 +343,13 @@ def _send_x_sync(text: str, image_path: str | None) -> Dict[str, Any]:
     body: CreateRequest
     mode = "text"
     try:
-        if image_path and Path(image_path).is_file():
+        if image_bytes:
+            normalized_filename = _normalize_image_filename(image_filename, image_content_type)
+            normalized_content_type = _guess_image_mime(normalized_filename, image_content_type)
             if use_oauth2:
-                media_id = _upload_image_oauth2_v2(client, image_path)
+                media_id = _upload_image_oauth2_v2(client, image_bytes, normalized_content_type)
             else:
-                media_id = _upload_image_oauth1_v11(client, image_path)
+                media_id = _upload_image_oauth1_v11(client, image_bytes)
             body = CreateRequest(text=text, media=CreateRequestMedia(media_ids=[media_id]))
             mode = "image+text"
         else:
@@ -400,7 +399,12 @@ def _send_x_sync(text: str, image_path: str | None) -> Dict[str, Any]:
         }
 
 
-async def _send_telegram(text: str, image_path: str | None) -> Dict[str, Any]:
+async def _send_telegram(
+    text: str,
+    image_bytes: bytes | None,
+    image_filename: str | None,
+    image_content_type: str | None,
+) -> Dict[str, Any]:
     token, token_source = _read_env_with_source("TG_BOT_TOKEN")
     if not token:
         token, token_source = _read_env_with_source("TELEGRAM_BOT_TOKEN")
@@ -424,11 +428,18 @@ async def _send_telegram(text: str, image_path: str | None) -> Dict[str, Any]:
 
     timeout = aiohttp.ClientTimeout(total=30)
     async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-        if image_path and Path(image_path).is_file():
+        if image_bytes:
+            normalized_filename = _normalize_image_filename(image_filename, image_content_type)
+            normalized_content_type = _guess_image_mime(normalized_filename, image_content_type)
             form = aiohttp.FormData()
             form.add_field("chat_id", chat_id)
             form.add_field("caption", text)
-            form.add_field("photo", Path(image_path).read_bytes(), filename=Path(image_path).name)
+            form.add_field(
+                "photo",
+                image_bytes,
+                filename=normalized_filename,
+                content_type=normalized_content_type,
+            )
             async with session.post(f"{_TG_API_BASE}/bot{token}/sendPhoto", data=form) as resp:
                 payload = await resp.json(content_type=None)
                 if resp.status < 400:
@@ -447,9 +458,14 @@ async def _send_telegram(text: str, image_path: str | None) -> Dict[str, Any]:
             return {"sent": False, "mode": "text", "note": "sendMessage failed", "payload": payload}
 
 
-async def _send_x(text: str, image_path: str | None) -> Dict[str, Any]:
+async def _send_x(
+    text: str,
+    image_bytes: bytes | None,
+    image_filename: str | None,
+    image_content_type: str | None,
+) -> Dict[str, Any]:
     """X API via xdk (blocking client runs in a thread pool)."""
-    return await asyncio.to_thread(_send_x_sync, text, image_path)
+    return await asyncio.to_thread(_send_x_sync, text, image_bytes, image_filename, image_content_type)
 
 
 async def _send_square(text: str) -> Dict[str, Any]:
@@ -508,15 +524,18 @@ def _derive_status(telegram_sent: bool, x_sent: bool, square_sent: bool) -> str:
 async def distribute_post(
     symbol_usdt: str,
     text: str,
+    image_bytes: bytes | None = None,
+    image_filename: str | None = None,
+    image_content_type: str | None = None,
 ) -> Dict[str, Any]:
     if not text.strip():
         raise ValueError("text 不能为空")
 
-    logger.info("distribute start symbol=%s text_len=%d", symbol_usdt, len(text))
-    use_chart_4h = _resolve_chart_4h_path(symbol_usdt)
+    has_image = bool(image_bytes)
+    logger.info("distribute start symbol=%s text_len=%d has_image=%s", symbol_usdt, len(text), has_image)
     telegram_result, x_result, square_result = await asyncio.gather(
-        _send_telegram(text, use_chart_4h),
-        _send_x(text, use_chart_4h),
+        _send_telegram(text, image_bytes, image_filename, image_content_type),
+        _send_x(text, image_bytes, image_filename, image_content_type),
         _send_square(text),
         return_exceptions=True,
     )
@@ -537,12 +556,19 @@ async def distribute_post(
     status = _derive_status(telegram_sent, x_sent, square_sent)
 
     notes: List[str] = []
-    if use_chart_4h is None:
-        notes.append("chart_4h missing under TA-Lib/image, TG/X may fallback to text")
+    if not has_image:
+        _append_note(notes, "image not provided, telegram/x sent as text")
+    for channel_name, channel_result in (
+        ("telegram", telegram_result),
+        ("x", x_result),
+        ("square", square_result),
+    ):
+        if not channel_result.get("sent"):
+            _append_note(notes, f"{channel_name}: {channel_result.get('note') or 'failed'}")
     if status == "partial":
-        notes.append("partial success")
+        _append_note(notes, "partial success")
     elif status == "failed":
-        notes.append("all channels failed")
+        _append_note(notes, "all channels failed")
 
     result = {
         "status": status,
