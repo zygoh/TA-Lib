@@ -1,6 +1,6 @@
 # TA-Lib
 
-本仓库是 **币安 U 本位合约数据与技术指标的 HTTP 服务**，在单一 FastAPI 应用中同时提供：技术指标计算、K 线相关图片、与交易/账户代理相关的接口、以及为 **MCP/Agent** 准备的 **`crypto-mcp` 聚合能力**（行情包、情绪、K 线出图、统一分发）。服务启动时还会按时间表运行 **Grok 情绪拉取** 与 **Cursor Agent 日更任务**（驱动工作区中 `zygo-skills` 的 `crypto-post-flow`）。
+本仓库是 **币安 U 本位合约数据与技术指标的 HTTP 服务**，在单一 FastAPI 应用中同时提供：技术指标计算、K 线相关图片、与交易/账户代理相关的接口、以及为 **MCP/Agent** 准备的 **`crypto-mcp` 聚合能力**（行情包、情绪、K 线出图、统一分发）。服务启动时还会按时间表运行 **Grok 情绪拉取**。
 
 > 注意：本项目的 Python 包名会安装 **官方技术分析库** `TA-Lib`；仓库名与此相同，在文档中若写「本服务」多指本 FastAPI 应用，若写「ta-lib 库」多指 C 库及其 Python 绑定。
 
@@ -14,17 +14,16 @@
 | **图片相关** | 与 K 线/图表展示相关的图像能力（与 `Pillow`、图表服务配合）。 |
 | **crypto-mcp** | 给 Agent 用的聚合接口：时间、一揽子数据、情绪、2h/4h K 线生成与取图、以及 **多平台帖子分发**。 |
 | **OAuth X** | 为 X（Twitter）OAuth2 等流程提供回调与路由；可按部署习惯挂在根路径或带前缀（如与反代 `.../tail` 配合）。 |
-| **后台定时任务** | 启动时：Grok 按北京时间对 ETH/BTC 读提示词跑情绪；Cursor Agent 在配置的时间对 ETH/BTC 触发日更 flow。 |
+| **后台定时任务** | 启动时：Grok 按北京时间对 ETH/BTC 读提示词跑情绪。 |
 
 更细的接口请打开服务自带的 **`/docs`（Swagger）** 或 **`/redoc`**。
 
 ## 与 zygo-skills 的关系
 
-- **`zygo-skills`** 仓库中 **`skills/crypto-post-flow/SKILL.md`** 是 **日更内容编排的单一事实来源**（初稿 → 压缩 → 配图 → 分发）。
-- 本服务中的 **`app/services/cursor_agent_scheduler.py`** 使用 **Cursor Cloud Agent API**（`https://api.cursor.com/v0/agents`），在设定时刻向 **指定 Git 仓库** 发起任务，**提示 Agent 按上述 flow 文件执行**（并传入 `symbol=BTC` 或 `ETH`）。
+- **`zygo-skills`** 仓库中 **`skills/crypto-post-flow/SKILL.md`** 是 **日更内容编排的单一事实来源**（初稿 → 压缩 → 配图 → 分发）；该 flow 可在 Cursor 等环境中由人工或外部调度触发，本服务不再内置自动调用 Cursor Cloud Agent API 的定时器。
 - 子技能里的 **crypto-analyst** 会调用本服务的 `GET /crypto-mcp/all`、以及 K 线图的直链等（具体 Base URL 以子技能内文档为准，例如可部署在 `https://.../tail` 后挂载）。
 
-因此：部署时通常把 **本仓库** 与 **父级工作区**（含 `zygo-skills`）**指向同一套远端仓库/分支**，并在环境变量中配置好 **Cursor 的仓库、分支、API Key 与排程时间**。
+因此：部署时通常把 **本仓库** 与 **父级工作区**（含 `zygo-skills`）**指向同一套远端仓库/分支**，以便 Agent 侧技能与本服务的 `crypto-mcp` 接口协同。
 
 ## 重要端点（crypto-mcp 前缀为 `/crypto-mcp`）
 
@@ -53,19 +52,6 @@ Grok 相关：
 **Grok / xAI**  
 - `XAI_API_KEY`、`XAI_MODEL`、`XAI_API_BASE_URL`（有默认基址）— Grok 情绪拉取。  
 - `GROK_UPDATE_TOKEN` 等（见 `grok_store`）— 若需保护更新类接口。
-
-**Cursor Agent 定时器**（`cursor_agent_scheduler`）  
-- `CURSOR_AGENT_SCHEDULER_ENABLED` — 是否开启（默认可为开启；以代码为准）。  
-- `CURSOR_API_KEY` — Cursor API 凭据。  
-- `CURSOR_REPOSITORY` — 仓库（需含 `zygo-skills` 所在仓库 URL）。  
-- `CURSOR_REF` — 分支，默认 `main`。  
-- `CURSOR_MODEL` — 可选模型。  
-- `CURSOR_SCHEDULE_TZ` — 时区，默认 `Asia/Shanghai`。  
-- `CURSOR_ETH_TIME` / `CURSOR_BTC_TIME` — 每日触发时刻，默认约 `08:01` 与 `20:01`（**与 Grok 的 07:55/19:55 是两套不同任务**）。  
-
-**Telegram 管理员通知**（仅在「调度器调用 Cursor API 失败」时发）  
-- `TG_BOT_TOKEN` 或 `TELEGRAM_BOT_TOKEN`  
-- `TG_ADMIN_CHAT_ID` 或 `TG_CHAT_ID` 或 `TELEGRAM_CHAT_ID`  
 
 **分发（`distribution_service`）**  
 - Telegram：`TG_BOT_TOKEN`、`TG_CHAT_ID` 等（与上部分可复用，语义以发送渠道为准）。  
@@ -97,6 +83,6 @@ uvicorn app.app:app --host 0.0.0.0 --port 8000
 
 ## 相关仓库
 
-- **zygo-skills**：日更 **crypto-post-flow** 与 **baoyu-imagine / baoyu-xhs-images** 等技能包，与本服务的 **Agent 定时器 + `crypto-mcp` 接口** 配套使用。
+- **zygo-skills**：日更 **crypto-post-flow** 与 **baoyu-imagine / baoyu-xhs-images** 等技能包，与本服务的 **`crypto-mcp` 接口** 配套使用。
 
-若你需要「最小可跑清单」，请至少配置：**服务监听、币安只读或业务所需 key、Grok 相关（若用定时情绪）、分发文案渠道对应的 token、以及（若用自动发帖）Cursor 的仓库与 API Key。**
+若你需要「最小可跑清单」，请至少配置：**服务监听、币安只读或业务所需 key、Grok 相关（若用定时情绪）、分发文案渠道对应的 token。**
