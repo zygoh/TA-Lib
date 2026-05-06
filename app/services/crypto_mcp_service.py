@@ -15,7 +15,6 @@ import feedparser
 from zoneinfo import ZoneInfo
 
 from app.services.indicator_service import calculate_indicators_sync
-from app.services.grok_store import GrokStore
 from app.services.kline_chart_service import KlineChartService
 
 
@@ -335,11 +334,7 @@ async def fetch_news_articles(keyword: str, max_articles: int = 50) -> List[Dict
     return filtered
 
 
-_grok_store = GrokStore()
-
-
 async def get_sentiment(symbol: str) -> Dict[str, Any]:
-    grok_content = _grok_store.read()
     keyword = symbol_to_keyword(symbol)
     news_articles = await fetch_news_articles(keyword, max_articles=30)
 
@@ -355,7 +350,7 @@ async def get_sentiment(symbol: str) -> Dict[str, Any]:
         news_summary = f"未找到 {keyword} 相关的新闻文章。"
 
     return {
-        "grok_analysis": grok_content,
+        "grok_analysis": "",
         "news_articles": news_articles,
         "news_summary": news_summary,
         "news_headlines": headlines,
@@ -383,7 +378,4 @@ _chart_service = KlineChartService()
 
 async def generate_kline_charts(symbol: str) -> Dict[str, Any]:
     return await _chart_service.generate(symbol, fetch_technical_data_fn=fetch_technical_data)
-
-
-update_grok_sentiment_file = _grok_store
 

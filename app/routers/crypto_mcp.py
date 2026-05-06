@@ -9,19 +9,15 @@ from __future__ import annotations
 
 import mimetypes
 import logging
-import asyncio
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
-from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.models.crypto_mcp_schemas import (
     CryptoBundleResponse,
-    GrokUpdateResponse,
-    GrokStatusResponse,
     SentimentResponse,
     TimeResponse,
     ChartsResponse,
@@ -36,32 +32,10 @@ from app.services.crypto_mcp_service import (
     generate_kline_charts,
 )
 from app.services.distribution_service import distribute_post
-from app.services.grok_api_client import GrokApiClient
-from app.services.grok_store import GrokStore
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/crypto-mcp", tags=["crypto-mcp"])
-
-grok_client: GrokApiClient = GrokApiClient()
-grok_store: GrokStore = GrokStore()
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
-def _normalize_grok_base_symbol(symbol: str) -> str:
-    """路径参数可为 BTC / ETH 或 BTCUSDT / ETHUSDT。"""
-    s = (symbol or "").strip().upper()
-    if s.endswith("USDT"):
-        s = s[:-4]
-    if s in ("BTC", "ETH"):
-        return s
-    raise HTTPException(
-        status_code=400,
-        detail="SYMBOL 仅支持 BTC 或 ETH（可带 USDT 后缀，如 BTCUSDT）",
-    )
 
 
 def _looks_like_image_upload(image: UploadFile) -> bool:
@@ -70,111 +44,6 @@ def _looks_like_image_upload(image: UploadFile) -> bool:
         return True
     guessed, _ = mimetypes.guess_type(image.filename or "")
     return bool(guessed and guessed.startswith("image/"))
-
-
-# Grok 任务状态：内存中维护，进程级别共享
-_grok_task_status: dict[str, str | int | None] = {
-    "status": "idle",       # idle / running / completed / failed
-    "error": None,
-    "updated_at": 0,
-}
-
-_grok_schedule: dict[str, tuple[int, int]] = {
-    "ETH": (7, 55),   # 北京时间 07:55
-    "BTC": (19, 55),  # 北京时间 19:55
-}
-_grok_scheduler_tasks: dict[str, asyncio.Task[None]] = {}
-_shanghai_tz = ZoneInfo("Asia/Shanghai")
-
-
-async def _run_grok_task(content: str) -> None:
-    """后台执行 Grok AI 请求并更新状态。"""
-    _grok_task_status["status"] = "running"
-    _grok_task_status["error"] = None
-    try:
-        result: str = await grok_client.fetch_sentiment(content)
-        grok_store.update(content=result)
-        _grok_task_status["status"] = "completed"
-        _grok_task_status["updated_at"] = int(time.time())
-        logger.info("✅ Grok 后台任务完成，内容长度: %d", len(result))
-    except Exception as e:
-        _grok_task_status["status"] = "failed"
-        _grok_task_status["error"] = str(e)
-        logger.error("❌ Grok 后台任务失败: %s", e)
-
-
-def _load_grok_prompt_content(base_symbol: str) -> str:
-    """读取并校验 data/{SYMBOL}_grok_prompt.md。"""
-    prompt_path = _repo_root() / "data" / f"{base_symbol}_grok_prompt.md"
-    if not prompt_path.is_file():
-        raise FileNotFoundError(f"未找到提示文件: {prompt_path.name}")
-    content = prompt_path.read_text(encoding="utf-8").strip()
-    if not content:
-        raise ValueError(f"提示文件内容为空: {prompt_path.name}")
-    return content
-
-
-async def _run_grok_task_for_symbol(base_symbol: str) -> bool:
-    """
-    按 SYMBOL 读取提示词并执行 Grok 分析。
-    返回 True 表示执行完成，False 表示因已有任务在跑而跳过。
-    """
-    content = _load_grok_prompt_content(base_symbol)
-    if _grok_task_status["status"] == "running":
-        logger.warning("⏭️ Grok 定时任务跳过：已有任务执行中 symbol=%s", base_symbol)
-        return False
-    await _run_grok_task(content)
-    return True
-
-
-def _seconds_until_next_run(hour: int, minute: int) -> tuple[float, str]:
-    """计算距离下一次指定北京时间触发点的秒数与展示时间。"""
-    now = datetime.now(_shanghai_tz)
-    next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if next_run <= now:
-        next_run = next_run + timedelta(days=1)
-    return (next_run - now).total_seconds(), next_run.isoformat()
-
-
-async def _scheduled_grok_runner(base_symbol: str, hour: int, minute: int) -> None:
-    """循环执行 SYMBOL 的每日定时任务。"""
-    logger.info(
-        "🕒 启动 Grok 定时任务 symbol=%s, schedule=%02d:%02d Asia/Shanghai",
-        base_symbol,
-        hour,
-        minute,
-    )
-    while True:
-        sleep_seconds, next_run_str = _seconds_until_next_run(hour, minute)
-        logger.info("⏱️ Grok 下次执行 symbol=%s at %s", base_symbol, next_run_str)
-        await asyncio.sleep(sleep_seconds)
-        try:
-            await _run_grok_task_for_symbol(base_symbol)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error("❌ Grok 定时任务执行异常 symbol=%s: %s", base_symbol, e)
-
-
-def start_grok_scheduler() -> None:
-    """启动 ETH/BTC 的 Grok 定时任务（幂等）。"""
-    for base_symbol, (hour, minute) in _grok_schedule.items():
-        existing = _grok_scheduler_tasks.get(base_symbol)
-        if existing and not existing.done():
-            continue
-        _grok_scheduler_tasks[base_symbol] = asyncio.create_task(
-            _scheduled_grok_runner(base_symbol, hour, minute)
-        )
-
-
-async def stop_grok_scheduler() -> None:
-    """停止所有 Grok 定时任务。"""
-    tasks = list(_grok_scheduler_tasks.values())
-    for task in tasks:
-        task.cancel()
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-    _grok_scheduler_tasks.clear()
 
 
 @router.get("/time", response_model=TimeResponse)
@@ -192,36 +61,9 @@ async def bundle(symbol: str):
 
 @router.get("/sentiment", response_model=SentimentResponse)
 async def sentiment(symbol: str):
-    """情绪聚合（本地 Grok 文件 + RSS 新闻）"""
+    """情绪聚合（RSS 新闻）"""
     target = ensure_symbol_usdt(symbol)
     return await get_sentiment(target)
-
-
-@router.get("/sentiment/grok/status", response_model=GrokStatusResponse)
-async def grok_status():
-    """查询 Grok AI 情绪分析任务的执行状态。"""
-    return GrokStatusResponse(
-        status=_grok_task_status["status"],  # type: ignore[arg-type]
-        error=_grok_task_status["error"],  # type: ignore[arg-type]
-        updated_at=_grok_task_status["updated_at"],  # type: ignore[arg-type]
-    )
-
-
-@router.get("/sentiment/grok/{symbol}", response_model=GrokUpdateResponse)
-async def update_grok(symbol: str):
-    """
-    兼容接口：当前已改为定时任务模式，不再手动触发。
-    - ETH: 每日 07:55（北京时间）
-    - BTC: 每日 19:55（北京时间）
-    """
-    base = _normalize_grok_base_symbol(symbol)
-    try:
-        _load_grok_prompt_content(base)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    return GrokUpdateResponse(ok=True)
 
 
 @router.get("/charts", response_model=ChartsResponse)

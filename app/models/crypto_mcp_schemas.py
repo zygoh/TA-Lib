@@ -15,7 +15,10 @@ class TimeResponse(BaseModel):
 
 
 class SentimentResponse(BaseModel):
-    grok_analysis: str
+    grok_analysis: str = Field(
+        default="",
+        description="已停用：不再调用 xAI/Grok，此字段恒为空字符串（保留字段以兼容旧客户端）",
+    )
     news_articles: List[Dict[str, Any]]
     news_summary: str
     news_headlines: List[str]
@@ -28,21 +31,6 @@ class CryptoBundleResponse(BaseModel):
     technical_analysis: Dict[str, Any]
     market_analysis: Dict[str, Any]
     sentiment_analysis: Dict[str, Any]
-
-
-class GrokUpdateRequest(BaseModel):
-    content: str = Field(..., min_length=1, description="发送给 Grok AI 的用户消息内容")
-
-
-class GrokUpdateResponse(BaseModel):
-    ok: bool
-    error: str | None = None
-
-
-class GrokStatusResponse(BaseModel):
-    status: str = Field(..., description="任务状态: pending, running, completed, failed")
-    error: str | None = None
-    updated_at: int = Field(0, description="最后更新时间戳（秒）")
 
 
 class ChartsResponse(BaseModel):
