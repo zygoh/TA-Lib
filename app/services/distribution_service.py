@@ -171,6 +171,21 @@ def _read_oauth2_user_token() -> Optional[Dict[str, Any]]:
     return token
 
 
+def _read_x_last_post_id() -> str:
+    value, _ = _read_env_with_source("X_LAST_POST_ID")
+    return value.strip()
+
+
+def _persist_x_last_post_id(post_id: str) -> None:
+    clean_id = (post_id or "").strip()
+    if not clean_id:
+        return
+    os.environ["X_LAST_POST_ID"] = clean_id
+    _upsert_repo_env("X_LAST_POST_ID", clean_id)
+    global _DOTENV_CACHE
+    _DOTENV_CACHE = None
+
+
 def _guess_image_mime(image_filename: str | None, image_content_type: str | None = None) -> str:
     if image_content_type and image_content_type.startswith("image/"):
         return image_content_type
@@ -253,6 +268,7 @@ def _send_x_sync(
     image_bytes: bytes | None,
     image_filename: str | None,
     image_content_type: str | None,
+    reply_to_previous: bool = False,
 ) -> Dict[str, Any]:
     """Post to X using official xdk (OAuth 2.0 preferred; OAuth 1.0a fallback)."""
     oauth2_token = _read_oauth2_user_token()
@@ -343,6 +359,14 @@ def _send_x_sync(
     body: CreateRequest
     mode = "text"
     try:
+        resolved_reply_to = ""
+        if reply_to_previous:
+            resolved_reply_to = _read_x_last_post_id()
+
+        body_payload: Dict[str, Any] = {"text": text}
+        if resolved_reply_to:
+            body_payload["reply"] = {"in_reply_to_tweet_id": resolved_reply_to}
+
         if image_bytes:
             normalized_filename = _normalize_image_filename(image_filename, image_content_type)
             normalized_content_type = _guess_image_mime(normalized_filename, image_content_type)
@@ -350,10 +374,10 @@ def _send_x_sync(
                 media_id = _upload_image_oauth2_v2(client, image_bytes, normalized_content_type)
             else:
                 media_id = _upload_image_oauth1_v11(client, image_bytes)
-            body = CreateRequest(text=text, media=CreateRequestMedia(media_ids=[media_id]))
+            body_payload["media"] = CreateRequestMedia(media_ids=[media_id]).model_dump(exclude_none=True)
             mode = "image+text"
-        else:
-            body = CreateRequest(text=text)
+
+        body = CreateRequest.model_validate(body_payload)
 
         resp = client.posts.create(body=body)
         payload = resp.model_dump() if hasattr(resp, "model_dump") else resp  # type: ignore[assignment]
@@ -368,7 +392,14 @@ def _send_x_sync(
             "auth_mode": mode_tag,
         }
         if tweet_id:
+            tweet_id_str = str(tweet_id)
+            _persist_x_last_post_id(tweet_id_str)
+            result["id"] = tweet_id_str
             result["url"] = f"https://x.com/i/status/{tweet_id}"
+        if resolved_reply_to:
+            result["reply_to_id"] = resolved_reply_to
+        if reply_to_previous:
+            result["reply_to_previous"] = True
         return result
 
     except (HTTPError, requests.RequestException, ValueError, RuntimeError) as exc:
@@ -463,9 +494,17 @@ async def _send_x(
     image_bytes: bytes | None,
     image_filename: str | None,
     image_content_type: str | None,
+    reply_to_previous: bool = False,
 ) -> Dict[str, Any]:
     """X API via xdk (blocking client runs in a thread pool)."""
-    return await asyncio.to_thread(_send_x_sync, text, image_bytes, image_filename, image_content_type)
+    return await asyncio.to_thread(
+        _send_x_sync,
+        text,
+        image_bytes,
+        image_filename,
+        image_content_type,
+        reply_to_previous,
+    )
 
 
 async def _send_square(text: str) -> Dict[str, Any]:
@@ -527,6 +566,7 @@ async def distribute_post(
     image_bytes: bytes | None = None,
     image_filename: str | None = None,
     image_content_type: str | None = None,
+    x_reply_to_previous: bool = False,
 ) -> Dict[str, Any]:
     if not text.strip():
         raise ValueError("text 不能为空")
@@ -535,7 +575,13 @@ async def distribute_post(
     logger.info("distribute start symbol=%s text_len=%d has_image=%s", symbol_usdt, len(text), has_image)
     telegram_result, x_result, square_result = await asyncio.gather(
         _send_telegram(text, image_bytes, image_filename, image_content_type),
-        _send_x(text, image_bytes, image_filename, image_content_type),
+        _send_x(
+            text,
+            image_bytes,
+            image_filename,
+            image_content_type,
+            x_reply_to_previous,
+        ),
         _send_square(text),
         return_exceptions=True,
     )

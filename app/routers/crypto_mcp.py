@@ -149,6 +149,10 @@ async def distribute(
     symbol: str = Form(..., min_length=1, description="BTC / ETH（可带USDT后缀）"),
     text: str = Form(..., min_length=1, description="待分发正文"),
     image: UploadFile | None = File(None, description="可选图片文件，支持常见 image/* 类型"),
+    x_reply_to_previous: bool = Form(
+        False,
+        description="可选：让 X 帖子自动回复上一次成功发送的 tweet（X_LAST_POST_ID）",
+    ),
 ):
     """
     单接口统一分发到 Telegram / X / Binance Square。
@@ -178,6 +182,7 @@ async def distribute(
         image_bytes=image_bytes,
         image_filename=image_filename,
         image_content_type=image_content_type,
+        x_reply_to_previous=x_reply_to_previous,
     )
     logger.info(
         "distribute api symbol=%s status=%s has_image=%s tg=%s x=%s square=%s",
