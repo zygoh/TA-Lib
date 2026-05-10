@@ -6,6 +6,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -176,6 +177,16 @@ def _read_x_last_post_id() -> str:
     return value.strip()
 
 
+def _read_x_status_url_handle() -> str:
+    """Optional @handle (without @) for permalinks like https://x.com/handle/status/id."""
+    for key in ("X_USERNAME", "X_SCREEN_NAME"):
+        raw, _ = _read_env_with_source(key)
+        h = raw.strip().lstrip("@")
+        if h and re.fullmatch(r"[A-Za-z0-9_]{1,15}", h):
+            return h
+    return ""
+
+
 def _persist_x_last_post_id(post_id: str) -> None:
     clean_id = (post_id or "").strip()
     if not clean_id:
@@ -187,7 +198,11 @@ def _persist_x_last_post_id(post_id: str) -> None:
 
 
 def _x_status_permalink(tweet_id: str) -> str:
-    return f"https://x.com/i/status/{tweet_id.strip()}"
+    tid = tweet_id.strip()
+    handle = _read_x_status_url_handle()
+    if handle:
+        return f"https://x.com/{handle}/status/{tid}"
+    return f"https://x.com/i/status/{tid}"
 
 
 def _x_text_with_appended_previous_link(
@@ -429,7 +444,7 @@ def _send_x_sync(
             tweet_id_str = str(tweet_id)
             _persist_x_last_post_id(tweet_id_str)
             result["id"] = tweet_id_str
-            result["url"] = f"https://x.com/i/status/{tweet_id}"
+            result["url"] = _x_status_permalink(str(tweet_id))
         if linked_previous_id:
             result["linked_previous_tweet_id"] = linked_previous_id
             result["previous_tweet_url"] = _x_status_permalink(linked_previous_id)
