@@ -151,8 +151,7 @@ async def distribute(
     image: UploadFile | None = File(None, description="可选图片文件，支持常见 image/* 类型"),
     x_reply_to_previous: bool = Form(
         False,
-        description="可选：在发往 X 的正文末尾附上上一次成功发送帖子的链接（读 X_LAST_POST_ID，不占回复链）。"
-        "若配置 X_USERNAME 或 X_SCREEN_NAME（不含 @），链接为 https://x.com/<用户名>/status/<id>；否则为 x.com/i/status/<id>。",
+        description="可选：发往 X 时用引用转帖方式引用上一次成功发送的帖子（读 X_LAST_POST_ID）。",
     ),
 ):
     """
