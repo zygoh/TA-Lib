@@ -186,6 +186,32 @@ def _persist_x_last_post_id(post_id: str) -> None:
     _DOTENV_CACHE = None
 
 
+def _x_status_permalink(tweet_id: str) -> str:
+    return f"https://x.com/i/status/{tweet_id.strip()}"
+
+
+def _x_text_with_appended_previous_link(
+    text: str,
+    previous_tweet_id: str,
+    max_length: int = 280,
+) -> tuple[str, bool]:
+    """
+    Append a permalink to the previous tweet at the end of the body (X-only).
+    Returns (final_text, truncated) — truncates the original text if needed to stay within max_length.
+    """
+    tid = (previous_tweet_id or "").strip()
+    if not tid:
+        return text, False
+    suffix = f"\n{_x_status_permalink(tid)}"
+    if len(text) + len(suffix) <= max_length:
+        return text + suffix, False
+    room = max_length - len(suffix)
+    if room <= 0:
+        return suffix[:max_length], True
+    trimmed = text[:room].rstrip()
+    return trimmed + suffix, True
+
+
 def _guess_image_mime(image_filename: str | None, image_content_type: str | None = None) -> str:
     if image_content_type and image_content_type.startswith("image/"):
         return image_content_type
@@ -270,7 +296,11 @@ def _send_x_sync(
     image_content_type: str | None,
     reply_to_previous: bool = False,
 ) -> Dict[str, Any]:
-    """Post to X using official xdk (OAuth 2.0 preferred; OAuth 1.0a fallback)."""
+    """Post to X using official xdk (OAuth 2.0 preferred; OAuth 1.0a fallback).
+
+    When reply_to_previous is True, the previous successful tweet id (X_LAST_POST_ID) is referenced by
+    appending its permalink to the tweet text — not by using the reply API.
+    """
     oauth2_token = _read_oauth2_user_token()
     client_id = _read_x_client_id()
     client_secret = _read_x_client_secret()
@@ -359,13 +389,17 @@ def _send_x_sync(
     body: CreateRequest
     mode = "text"
     try:
-        resolved_reply_to = ""
+        linked_previous_id = ""
+        text_for_x = text
+        text_truncated_for_link = False
         if reply_to_previous:
-            resolved_reply_to = _read_x_last_post_id()
+            linked_previous_id = _read_x_last_post_id()
+            if linked_previous_id:
+                text_for_x, text_truncated_for_link = _x_text_with_appended_previous_link(
+                    text, linked_previous_id
+                )
 
-        body_payload: Dict[str, Any] = {"text": text}
-        if resolved_reply_to:
-            body_payload["reply"] = {"in_reply_to_tweet_id": resolved_reply_to}
+        body_payload: Dict[str, Any] = {"text": text_for_x}
 
         if image_bytes:
             normalized_filename = _normalize_image_filename(image_filename, image_content_type)
@@ -396,10 +430,15 @@ def _send_x_sync(
             _persist_x_last_post_id(tweet_id_str)
             result["id"] = tweet_id_str
             result["url"] = f"https://x.com/i/status/{tweet_id}"
-        if resolved_reply_to:
-            result["reply_to_id"] = resolved_reply_to
+        if linked_previous_id:
+            result["linked_previous_tweet_id"] = linked_previous_id
+            result["previous_tweet_url"] = _x_status_permalink(linked_previous_id)
         if reply_to_previous:
             result["reply_to_previous"] = True
+            if not linked_previous_id:
+                result["previous_link_note"] = "X_LAST_POST_ID missing; posted without appended link"
+            elif text_truncated_for_link:
+                result["previous_link_note"] = "body truncated to fit X character limit with appended link"
         return result
 
     except (HTTPError, requests.RequestException, ValueError, RuntimeError) as exc:
