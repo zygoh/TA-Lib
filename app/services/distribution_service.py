@@ -205,26 +205,12 @@ def _x_status_permalink(tweet_id: str) -> str:
     return f"https://x.com/i/status/{tid}"
 
 
-def _x_text_with_appended_previous_link(
-    text: str,
-    previous_tweet_id: str,
-    max_length: int = 280,
-) -> tuple[str, bool]:
-    """
-    Append a permalink to the previous tweet at the end of the body (X-only).
-    Returns (final_text, truncated) — truncates the original text if needed to stay within max_length.
-    """
+def _x_text_with_appended_previous_link(text: str, previous_tweet_id: str) -> str:
+    """Append a newline and permalink to the previous tweet (X-only). No server-side length trimming."""
     tid = (previous_tweet_id or "").strip()
     if not tid:
-        return text, False
-    suffix = f"\n{_x_status_permalink(tid)}"
-    if len(text) + len(suffix) <= max_length:
-        return text + suffix, False
-    room = max_length - len(suffix)
-    if room <= 0:
-        return suffix[:max_length], True
-    trimmed = text[:room].rstrip()
-    return trimmed + suffix, True
+        return text
+    return f"{text}\n{_x_status_permalink(tid)}"
 
 
 def _guess_image_mime(image_filename: str | None, image_content_type: str | None = None) -> str:
@@ -406,13 +392,10 @@ def _send_x_sync(
     try:
         linked_previous_id = ""
         text_for_x = text
-        text_truncated_for_link = False
         if reply_to_previous:
             linked_previous_id = _read_x_last_post_id()
             if linked_previous_id:
-                text_for_x, text_truncated_for_link = _x_text_with_appended_previous_link(
-                    text, linked_previous_id
-                )
+                text_for_x = _x_text_with_appended_previous_link(text, linked_previous_id)
 
         body_payload: Dict[str, Any] = {"text": text_for_x}
 
@@ -452,8 +435,6 @@ def _send_x_sync(
             result["reply_to_previous"] = True
             if not linked_previous_id:
                 result["previous_link_note"] = "X_LAST_POST_ID missing; posted without appended link"
-            elif text_truncated_for_link:
-                result["previous_link_note"] = "body truncated to fit X character limit with appended link"
         return result
 
     except (HTTPError, requests.RequestException, ValueError, RuntimeError) as exc:
