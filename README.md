@@ -34,7 +34,7 @@
 - **`GET /crypto-mcp/charts?symbol=...`** — 生成 2h/4h 等 K 线输出信息（见实现）。
 - **`GET /crypto-mcp/charts/image?...`** — 直接返回已生成的 **PNG 图片**（用于 Agent「看图」）。
 - **`GET /crypto-mcp/all?symbol=...`** — 汇总时间与 bundle，并在流程中生成 K 线（**crypto-analyst 主调**）。
-- **`POST /crypto-mcp/distribute`** — 表单提交 `symbol`、`text`、可选 `image` 文件，**统一向 Telegram、X、币安广场等渠道分发**（与 `zygo-skills` 里 `distribute-post` 能力对应）；支持可选 `x_reply_to_previous=true`（自动回复上一条成功 X 帖子）。
+- **`POST /crypto-mcp/distribute`** — 表单提交 `symbol`、`text`、可选 `image` 文件，**统一向 Telegram、X、币安广场等渠道分发**（与 `zygo-skills` 里 `distribute-post` 能力对应）；支持可选 `x_reply_to_previous=true`（在 X 上用引用转帖方式引用上一条成功帖子）。
 
 ## 环境变量（说明性列表）
 
@@ -46,7 +46,7 @@
 **分发（`distribution_service`）**  
 - Telegram：`TG_BOT_TOKEN`、`TG_CHAT_ID` 等（与上部分可复用，语义以发送渠道为准）。  
 - X / OAuth2：`X_CLIENT_ID`、`X_CLIENT_SECRET`、`X_REDIRECT_URI`、`X_OAUTH2_TOKEN` 或 `X_OAUTH2_ACCESS_TOKEN` / `X_OAUTH2_REFRESH_TOKEN`；以及 OAuth1 媒体上传相关 `X_CONSUMER_KEY`、`X_CONSUMER_SECRET`、`X_ACCESS_TOKEN`、`X_ACCESS_TOKEN_SECRET` 等。  
-- X 回帖串联：`X_LAST_POST_ID`（服务会在每次 X 发帖成功后自动更新，可配合 `x_reply_to_previous=true` 使用）。  
+- X 引用转帖：`X_LAST_POST_ID`（服务会在每次 X 发帖成功后自动更新，可配合 `x_reply_to_previous=true` 使用）。  
 - 币安广场：`SQUARE_OPENAPI_KEY`。  
 - 其他：`X_OAUTH1_CALLBACK` 等见代码。
 

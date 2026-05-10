@@ -205,14 +205,6 @@ def _x_status_permalink(tweet_id: str) -> str:
     return f"https://x.com/i/status/{tid}"
 
 
-def _x_text_with_appended_previous_link(text: str, previous_tweet_id: str) -> str:
-    """Append a newline and permalink to the previous tweet (X-only). No server-side length trimming."""
-    tid = (previous_tweet_id or "").strip()
-    if not tid:
-        return text
-    return f"{text}\n{_x_status_permalink(tid)}"
-
-
 def _guess_image_mime(image_filename: str | None, image_content_type: str | None = None) -> str:
     if image_content_type and image_content_type.startswith("image/"):
         return image_content_type
@@ -299,8 +291,8 @@ def _send_x_sync(
 ) -> Dict[str, Any]:
     """Post to X using official xdk (OAuth 2.0 preferred; OAuth 1.0a fallback).
 
-    When reply_to_previous is True, the previous successful tweet id (X_LAST_POST_ID) is referenced by
-    appending its permalink to the tweet text — not by using the reply API.
+    When reply_to_previous is True, the previous successful tweet id (X_LAST_POST_ID) is
+    sent as quote_tweet_id so X renders it as a quote post.
     """
     oauth2_token = _read_oauth2_user_token()
     client_id = _read_x_client_id()
@@ -390,14 +382,13 @@ def _send_x_sync(
     body: CreateRequest
     mode = "text"
     try:
-        linked_previous_id = ""
-        text_for_x = text
+        quoted_previous_id = ""
         if reply_to_previous:
-            linked_previous_id = _read_x_last_post_id()
-            if linked_previous_id:
-                text_for_x = _x_text_with_appended_previous_link(text, linked_previous_id)
+            quoted_previous_id = _read_x_last_post_id()
 
-        body_payload: Dict[str, Any] = {"text": text_for_x}
+        body_payload: Dict[str, Any] = {"text": text}
+        if quoted_previous_id:
+            body_payload["quote_tweet_id"] = quoted_previous_id
 
         if image_bytes:
             normalized_filename = _normalize_image_filename(image_filename, image_content_type)
@@ -428,13 +419,15 @@ def _send_x_sync(
             _persist_x_last_post_id(tweet_id_str)
             result["id"] = tweet_id_str
             result["url"] = _x_status_permalink(str(tweet_id))
-        if linked_previous_id:
-            result["linked_previous_tweet_id"] = linked_previous_id
-            result["previous_tweet_url"] = _x_status_permalink(linked_previous_id)
+        if quoted_previous_id:
+            result["quoted_previous_tweet_id"] = quoted_previous_id
+            result["quote_tweet_id"] = quoted_previous_id
+            result["previous_tweet_url"] = _x_status_permalink(quoted_previous_id)
         if reply_to_previous:
             result["reply_to_previous"] = True
-            if not linked_previous_id:
-                result["previous_link_note"] = "X_LAST_POST_ID missing; posted without appended link"
+            result["quote_previous"] = bool(quoted_previous_id)
+            if not quoted_previous_id:
+                result["quote_previous_note"] = "X_LAST_POST_ID missing; posted without quote tweet"
         return result
 
     except (HTTPError, requests.RequestException, ValueError, RuntimeError) as exc:
