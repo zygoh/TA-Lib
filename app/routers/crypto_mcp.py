@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from app.models.crypto_mcp_schemas import (
@@ -23,12 +23,14 @@ from app.models.crypto_mcp_schemas import (
     ChartsResponse,
     CryptoMcpAllResponse,
     DistributeResponse,
+    GainersResponse,
 )
 from app.services.crypto_mcp_service import (
     ensure_symbol_usdt,
     get_shanghai_time,
     get_crypto_bundle,
     get_sentiment,
+    fetch_top_gainers,
     generate_kline_charts,
 )
 from app.services.distribution_service import distribute_post
@@ -64,6 +66,23 @@ async def sentiment(symbol: str):
     """情绪聚合（RSS 新闻）"""
     target = ensure_symbol_usdt(symbol)
     return await get_sentiment(target)
+
+
+@router.get("/news", response_model=SentimentResponse)
+async def news(symbol: str):
+    """指定币种免费新闻聚合（等价于 sentiment，便于按涨幅榜选币后直查）"""
+    target = ensure_symbol_usdt(symbol)
+    return await get_sentiment(target)
+
+
+@router.get("/gainers", response_model=GainersResponse)
+async def gainers(
+    limit: int = Query(20, ge=1, le=100, description="返回涨幅榜数量"),
+    min_quote_volume: float = Query(5_000_000, ge=0, description="最小 24h quoteVolume，默认过滤低流动性噪音"),
+    include_1000: bool = Query(True, description="是否包含 1000PEPEUSDT 等乘数合约"),
+):
+    """币安 U 本位合约 24h 涨幅榜"""
+    return await fetch_top_gainers(limit=limit, min_quote_volume=min_quote_volume, include_1000=include_1000)
 
 
 @router.get("/charts", response_model=ChartsResponse)

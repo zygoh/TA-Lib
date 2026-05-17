@@ -12,7 +12,7 @@
 | **技术指标** | 对币安期货 K 线计算指标（支持多种周期；见 `POST /calculate` 等）。 |
 | **交易与账户** | 在配置币安只读/交易密钥的前提下，拉取账户信息、处理交易信号等。 |
 | **图片相关** | 与 K 线/图表展示相关的图像能力（与 `Pillow`、图表服务配合）。 |
-| **crypto-mcp** | 给 Agent 用的聚合接口：时间、一揽子数据、情绪（RSS）、2h/4h K 线生成与取图、以及 **多平台帖子分发**。 |
+| **crypto-mcp** | 给 Agent 用的聚合接口：时间、币安 U 本位涨幅榜、一揽子数据、情绪/新闻（免费 RSS + 公共新闻接口）、2h/4h K 线生成与取图、以及 **多平台帖子分发**。 |
 | **OAuth X** | 为 X（Twitter）OAuth2 等流程提供回调与路由；可按部署习惯挂在根路径或带前缀（如与反代 `.../tail` 配合）。 |
 
 更细的接口请打开服务自带的 **`/docs`（Swagger）** 或 **`/redoc`**。
@@ -29,12 +29,16 @@
 以下便于对接 Agent 与运维排查（具体字段以 Pydantic 模型与 OpenAPI 为准）：
 
 - **`GET /crypto-mcp/time`** — 上海时区/北京时间信息。
+- **`GET /crypto-mcp/gainers?limit=20&min_quote_volume=5000000&include_1000=true`** — 币安 U 本位合约 24h 涨幅榜；按 `priceChangePercent` 降序返回，默认过滤低成交额噪音。
 - **`GET /crypto-mcp/bundle?symbol=...`** — 技术 + 市场 + 情绪等聚合。
 - **`GET /crypto-mcp/sentiment?symbol=...`** — 情绪相关聚合（RSS；响应中 `grok_analysis` 恒为空字符串，仅为兼容保留）。
+- **`GET /crypto-mcp/news?symbol=...`** — 指定币种免费新闻聚合（与 `sentiment` 同源，便于从涨幅榜挑选 symbol 后单独查询新闻）。
 - **`GET /crypto-mcp/charts?symbol=...`** — 生成 2h/4h 等 K 线输出信息（见实现）。
 - **`GET /crypto-mcp/charts/image?...`** — 直接返回已生成的 **PNG 图片**（用于 Agent「看图」）。
 - **`GET /crypto-mcp/all?symbol=...`** — 汇总时间与 bundle，并在流程中生成 K 线（**crypto-analyst 主调**）。
 - **`POST /crypto-mcp/distribute`** — 表单提交 `symbol`、`text`、可选 `image` 文件，**统一向 Telegram、X、币安广场等渠道分发**（与 `zygo-skills` 里 `distribute-post` 能力对应）；支持可选 `x_reply_to_previous=true`（在 X 上用引用转帖方式引用上一条成功帖子）。
+
+新闻源说明：当前仅使用免费来源，包括站点 RSS、PANews RSS、Odaily RSS、Sharpe 公共新闻接口，以及从 ChainFeeds 源目录中筛选出的可用免费媒体/Newsletter RSS；不依赖 CryptoPanic / CoinGecko News 等付费 API。动态币种会按 symbol 生成关键词并做边界匹配，减少 `SUI`、`ARB` 等短代码误报。
 
 ## 环境变量（说明性列表）
 

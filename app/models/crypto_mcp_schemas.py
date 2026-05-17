@@ -23,7 +23,26 @@ class SentimentResponse(BaseModel):
     news_summary: str
     news_headlines: List[str]
     keyword: str
+    keywords: List[str] = Field(default_factory=list, description="用于匹配当前 symbol 的新闻关键词")
     symbol: str
+
+
+class GainerItem(BaseModel):
+    rank: int
+    symbol: str
+    base_asset: str
+    normalized_base_asset: str
+    priceChangePercent: float
+    lastPrice: float
+    quoteVolume: float
+    volume: float
+
+
+class GainersResponse(BaseModel):
+    source: str
+    min_quote_volume: float
+    include_1000: bool
+    gainers: List[GainerItem]
 
 
 class CryptoBundleResponse(BaseModel):
