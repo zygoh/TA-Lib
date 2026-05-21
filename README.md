@@ -19,7 +19,7 @@
 
 ## 与 zygo-skills 的关系
 
-- **`zygo-skills`** 仓库中 **`skills/crypto-post-flow/SKILL.md`** 是 **日更内容编排的单一事实来源**（初稿 → 压缩 → 配图 → 分发）；该 flow 可在 Cursor 等环境中由人工或外部调度触发，本服务不再内置自动调用 Cursor Cloud Agent API 的定时器。
+- **`zygo-skills`** 仓库中 **`skills/crypto-post-flow/SKILL.md`** 是 **日更内容编排的单一事实来源**（选币 → 初稿 → 卦象加持 → 并行压缩/配图 → **Stage 2.5 发布前校验** → 分发 → 记忆）；该 flow 可在 Cursor 等环境中由人工或外部调度触发，本服务不再内置自动调用 Cursor Cloud Agent API 的定时器。`distribute-post` 仅接收 flow 校验后的 `validated_final_text` / 可选 `validated_image_path`，对应本服务 **`POST /crypto-mcp/distribute`**。
 - 子技能里的 **crypto-analyst** 会调用本服务的 `GET /crypto-mcp/all`、以及 K 线图的直链等（具体 Base URL 以子技能内文档为准，例如可部署在 `https://.../tail` 后挂载）。
 
 因此：部署时通常把 **本仓库** 与 **父级工作区**（含 `zygo-skills`）**指向同一套远端仓库/分支**，以便 Agent 侧技能与本服务的 `crypto-mcp` 接口协同。
