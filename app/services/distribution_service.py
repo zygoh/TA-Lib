@@ -22,7 +22,11 @@ logger = logging.getLogger(__name__)
 
 _TG_API_BASE = "https://api.telegram.org"
 _X_MEDIA_UPLOAD_V11 = "https://upload.twitter.com/1.1/media/upload.json"
-_SQUARE_POST_URL = "https://www.binance.com/bapi/composite/v1/public/pgc/openApi/content/add"
+_SQUARE_BASE_V1 = "https://www.binance.com/bapi/composite/v1/public/pgc/openApi"
+_SQUARE_BASE_V2 = "https://www.binance.com/bapi/composite/v2/public/pgc/openApi"
+_SQUARE_POST_URL = f"{_SQUARE_BASE_V1}/content/add"
+_SQUARE_POLL_INTERVAL_SEC = 3
+_SQUARE_MAX_POLL_RETRIES = 10
 _DOTENV_CACHE: Dict[str, str] | None = None
 
 _X_OAUTH2_SCOPES = ["tweet.read", "tweet.write", "users.read", "media.write", "offline.access"]
@@ -535,48 +539,212 @@ async def _send_x(
     )
 
 
-async def _send_square(text: str) -> Dict[str, Any]:
-    api_key, api_key_source = _read_env_with_source("SQUARE_OPENAPI_KEY")
-    if not api_key:
-        return {
-            "sent": False,
-            "mode": "none",
-            "note": "missing SQUARE_OPENAPI_KEY",
-            "credential_check": {
-                "SQUARE_OPENAPI_KEY": {
-                    "present": bool(api_key),
-                    "source": api_key_source,
-                    "length": len(api_key),
-                }
-            },
-        }
+def _read_square_api_key() -> Tuple[str, str]:
+    for name in ("SQUARE_OPENAPI_KEY", "BINANCE_SQUARE_OPENAPI_KEY"):
+        value, source = _read_env_with_source(name)
+        if value:
+            return value, source
+    return "", "missing"
 
-    timeout = aiohttp.ClientTimeout(total=30)
-    body = {"bodyTextOnly": text}
-    headers = {
+
+def _square_credential_snapshot() -> Dict[str, Dict[str, Any]]:
+    snapshot: Dict[str, Dict[str, Any]] = {}
+    for name in ("SQUARE_OPENAPI_KEY", "BINANCE_SQUARE_OPENAPI_KEY"):
+        value, source = _read_env_with_source(name)
+        snapshot[name] = {"present": bool(value), "source": source, "length": len(value)}
+    return snapshot
+
+
+def _square_headers(api_key: str) -> Dict[str, str]:
+    return {
         "X-Square-OpenAPI-Key": api_key,
         "Content-Type": "application/json; charset=utf-8",
         "clienttype": "binanceSkill",
     }
-    async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-        async with session.post(_SQUARE_POST_URL, json=body, headers=headers) as resp:
-            payload = await resp.json(content_type=None)
-            if resp.status >= 400:
-                return {"sent": False, "mode": "text", "note": f"square http failed {resp.status}", "payload": payload}
 
-            code = payload.get("code")
-            post_id = payload.get("data", {}).get("id")
-            if code == "000000" and post_id:
-                return {
-                    "sent": True,
-                    "mode": "text",
-                    "id": post_id,
-                    "url": f"https://www.binance.com/en/square/post/{post_id}",
-                    "payload": payload,
-                }
-            if code == "000000":
-                return {"sent": True, "mode": "text", "note": "square success but id missing", "payload": payload}
-            return {"sent": False, "mode": "text", "note": "square business failed", "payload": payload}
+
+async def _square_api_json(
+    session: aiohttp.ClientSession,
+    *,
+    base_url: str,
+    endpoint: str,
+    api_key: str,
+    body: Dict[str, Any],
+) -> Tuple[int, Any]:
+    async with session.post(
+        f"{base_url}{endpoint}",
+        json=body,
+        headers=_square_headers(api_key),
+    ) as resp:
+        raw = await resp.text()
+        if endpoint == "/content/add" and resp.status == 504:
+            return resp.status, {"code": "000000", "data": {"id": None, "shareLink": None}}
+        try:
+            payload = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            raise RuntimeError(f"square api non-json response {resp.status}: {raw[:200]}") from None
+        if resp.status >= 400:
+            raise RuntimeError(f"square api http {resp.status}: {payload}")
+        code = payload.get("code")
+        if code != "000000":
+            message = payload.get("message") or payload
+            raise RuntimeError(f"square api error [{code}]: {message}")
+        return resp.status, payload.get("data") or {}
+
+
+async def _upload_square_image(
+    session: aiohttp.ClientSession,
+    api_key: str,
+    image_bytes: bytes,
+    image_filename: str | None,
+    image_content_type: str | None,
+) -> str:
+    normalized_filename = _normalize_image_filename(image_filename, image_content_type)
+    normalized_content_type = _guess_image_mime(normalized_filename, image_content_type)
+
+    _, presign_payload = await _square_api_json(
+        session,
+        base_url=_SQUARE_BASE_V2,
+        endpoint="/image/presignedUrl",
+        api_key=api_key,
+        body={"imageName": normalized_filename},
+    )
+    presigned_url = presign_payload.get("presignedUrl")
+    file_ticket = presign_payload.get("fileTicket")
+    if not presigned_url or not file_ticket:
+        raise RuntimeError(f"square presignedUrl missing fields: {presign_payload}")
+
+    async with session.put(
+        presigned_url,
+        data=image_bytes,
+        headers={"Content-Type": normalized_content_type},
+    ) as put_resp:
+        if put_resp.status >= 400:
+            detail = await put_resp.text()
+            raise RuntimeError(f"square s3 upload failed {put_resp.status}: {detail[:200]}")
+
+    for attempt in range(_SQUARE_MAX_POLL_RETRIES):
+        _, status_payload = await _square_api_json(
+            session,
+            base_url=_SQUARE_BASE_V2,
+            endpoint="/image/imageStatus",
+            api_key=api_key,
+            body={"fileTicket": file_ticket},
+        )
+        status = status_payload.get("status")
+        if status == 1:
+            image_url = status_payload.get("imageUrl")
+            if not image_url:
+                raise RuntimeError(f"square image ready but imageUrl missing: {status_payload}")
+            return str(image_url)
+        if status == 2:
+            raise RuntimeError(f"square image processing failed: {status_payload.get('failedReason')}")
+        if attempt + 1 < _SQUARE_MAX_POLL_RETRIES:
+            await asyncio.sleep(_SQUARE_POLL_INTERVAL_SEC)
+
+    raise RuntimeError(f"square image poll timed out after {_SQUARE_MAX_POLL_RETRIES} retries")
+
+
+    raise RuntimeError(f"square image poll timed out after {_SQUARE_MAX_POLL_RETRIES} retries")
+
+
+def _square_publish_result(data: Dict[str, Any], *, mode: str, raw_payload: Any = None) -> Dict[str, Any]:
+    post_id = data.get("id")
+    share_link = data.get("shareLink")
+    result: Dict[str, Any] = {"sent": True, "mode": mode}
+    if raw_payload is not None:
+        result["payload"] = raw_payload
+    if post_id:
+        result["id"] = post_id
+        result["url"] = share_link or f"https://www.binance.com/en/square/post/{post_id}"
+    elif share_link:
+        result["url"] = share_link
+        result["note"] = "square success but id missing"
+    else:
+        result["note"] = "square submitted; id/link unavailable (e.g. HTTP 504 after submit)"
+    return result
+
+
+async def _send_square(
+    text: str,
+    image_bytes: bytes | None = None,
+    image_filename: str | None = None,
+    image_content_type: str | None = None,
+) -> Dict[str, Any]:
+    api_key, api_key_source = _read_square_api_key()
+    if not api_key:
+        credential_check = _square_credential_snapshot()
+        return {
+            "sent": False,
+            "mode": "none",
+            "note": "missing SQUARE_OPENAPI_KEY or BINANCE_SQUARE_OPENAPI_KEY",
+            "credential_check": credential_check,
+        }
+
+    mode = "text"
+    publish_body: Dict[str, Any] = {"contentType": 1, "bodyTextOnly": text}
+    timeout = aiohttp.ClientTimeout(total=120)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            if image_bytes:
+                image_url = await _upload_square_image(
+                    session,
+                    api_key,
+                    image_bytes,
+                    image_filename,
+                    image_content_type,
+                )
+                publish_body["imageList"] = [image_url]
+                mode = "image+text"
+
+            async with session.post(
+                _SQUARE_POST_URL,
+                json=publish_body,
+                headers=_square_headers(api_key),
+            ) as resp:
+                raw = await resp.text()
+                if resp.status == 504:
+                    return _square_publish_result(
+                        {"id": None, "shareLink": None},
+                        mode=mode,
+                        raw_payload={"http_status": 504, "body": raw[:500]},
+                    )
+                try:
+                    payload = json.loads(raw) if raw else {}
+                except json.JSONDecodeError:
+                    return {
+                        "sent": False,
+                        "mode": mode,
+                        "note": f"square publish non-json response {resp.status}",
+                        "payload": {"detail": raw[:500]},
+                    }
+                if resp.status >= 400:
+                    return {
+                        "sent": False,
+                        "mode": mode,
+                        "note": f"square http failed {resp.status}",
+                        "payload": payload,
+                    }
+                code = payload.get("code")
+                if code != "000000":
+                    return {
+                        "sent": False,
+                        "mode": mode,
+                        "note": "square business failed",
+                        "payload": payload,
+                    }
+                data = payload.get("data") or {}
+                return _square_publish_result(data, mode=mode, raw_payload=payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("square channel failed: %s", exc)
+        return {
+            "sent": False,
+            "mode": mode,
+            "note": f"square failed: {exc}",
+            "credential_check": {
+                "resolved_key_source": api_key_source,
+            },
+        }
 
 
 def _derive_status(telegram_sent: bool, x_sent: bool, square_sent: bool) -> str:
@@ -610,7 +778,7 @@ async def distribute_post(
             image_content_type,
             x_reply_to_previous,
         ),
-        _send_square(text),
+        _send_square(text, image_bytes, image_filename, image_content_type),
         return_exceptions=True,
     )
 
@@ -631,7 +799,7 @@ async def distribute_post(
 
     notes: List[str] = []
     if not has_image:
-        _append_note(notes, "image not provided, telegram/x sent as text")
+        _append_note(notes, "image not provided; channels sent as text-only where applicable")
     for channel_name, channel_result in (
         ("telegram", telegram_result),
         ("x", x_result),

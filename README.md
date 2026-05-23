@@ -19,7 +19,7 @@
 
 ## 与 zygo-skills 的关系
 
-- **`zygo-skills`** 仓库中 **`skills/crypto-post-flow/SKILL.md`** 是 **日更内容编排的单一事实来源**（选币 → 初稿 → 卦象加持 → 并行压缩/配图 → **Stage 2.5 发布前校验** → 分发 → 记忆）；该 flow 可在 Cursor 等环境中由人工或外部调度触发，本服务不再内置自动调用 Cursor Cloud Agent API 的定时器。`distribute-post` 仅接收 flow 校验后的 `validated_final_text` / 可选 `validated_image_path`，对应本服务 **`POST /crypto-mcp/distribute`**。
+- **`zygo-skills`** 仓库中 **`skills/crypto-post-flow/SKILL.md`** 是 **日更内容编排的单一事实来源**（选币 → 初稿 → 卦象加持 → 并行压缩/配图 → **Stage 2.5 发布前校验** → 分发 → **Cloud Automation Memories**）；推荐在 **Cursor Cloud Automation** 中运行；本服务不再内置自动调用 Cursor Cloud Agent API 的定时器。Stage 4 经 automation **Memories** 工具写入默认条目 `MEMORIES.md`（**非本仓库文件**）。`distribute-post` 仅接收 flow 校验后的 `validated_final_text` / 可选 `validated_image_path`，对应本服务 **`POST /crypto-mcp/distribute`**。
 - 子技能里的 **crypto-analyst** 会调用本服务的 `GET /crypto-mcp/all`、以及 K 线图的直链等（具体 Base URL 以子技能内文档为准，例如可部署在 `https://.../tail` 后挂载）。
 
 因此：部署时通常把 **本仓库** 与 **父级工作区**（含 `zygo-skills`）**指向同一套远端仓库/分支**，以便 Agent 侧技能与本服务的 `crypto-mcp` 接口协同。
@@ -36,7 +36,13 @@
 - **`GET /crypto-mcp/charts?symbol=...`** — 生成 2h/4h 等 K 线输出信息（见实现）。
 - **`GET /crypto-mcp/charts/image?...`** — 直接返回已生成的 **PNG 图片**（用于 Agent「看图」）。
 - **`GET /crypto-mcp/all?symbol=...`** — 汇总时间与 bundle，并在流程中生成 K 线（**crypto-analyst 主调**）。
-- **`POST /crypto-mcp/distribute`** — 表单提交 `symbol`、`text`、可选 `image` 文件，**统一向 Telegram、X、币安广场等渠道分发**（与 `zygo-skills` 里 `distribute-post` 能力对应）；支持可选 `x_reply_to_previous=true`（在 X 上用引用转帖方式引用上一条成功帖子）。
+- **`POST /crypto-mcp/distribute`** — 表单提交 `symbol`、`text`、可选 `image` 文件，**统一向 Telegram、X、币安 Square 等渠道分发**（与 `zygo-skills` 里 `distribute-post` 能力对应）；支持可选 `x_reply_to_previous=true`（在 X 上用引用转帖方式引用上一条成功帖子）。
+
+  **Binance Square 行为**（对齐 [Binance square-post skill](https://github.com/binance/binance-skills-hub/tree/main/skills/binance/square-post)）：
+  - 有 `image`：先走 OpenAPI 预签名上传 → 轮询处理 → 以 `contentType=1` + `imageList` 发图文短帖（本接口当前传 **1 张**）。
+  - 无 `image`：纯文本短帖（`contentType=1`，仅 `bodyTextOnly`）。
+  - **标签**：`#话题` 与 `$COIN` 须写在 `text` 正文内，由 Square 服务端解析；接口无单独 tags 字段。
+  - OpenAPI Key：`SQUARE_OPENAPI_KEY` 或 `BINANCE_SQUARE_OPENAPI_KEY`（请求头 `X-Square-OpenAPI-Key`）。
 
 新闻源说明：当前仅使用免费来源，包括站点 RSS、PANews RSS、Odaily RSS、Sharpe 公共新闻接口，以及从 ChainFeeds 源目录中筛选出的可用免费媒体/Newsletter RSS；不依赖 CryptoPanic / CoinGecko News 等付费 API。动态币种会按 symbol 生成关键词并做边界匹配，减少 `SUI`、`ARB` 等短代码误报。
 
@@ -51,7 +57,7 @@
 - Telegram：`TG_BOT_TOKEN`、`TG_CHAT_ID` 等（与上部分可复用，语义以发送渠道为准）。  
 - X / OAuth2：`X_CLIENT_ID`、`X_CLIENT_SECRET`、`X_REDIRECT_URI`、`X_OAUTH2_TOKEN` 或 `X_OAUTH2_ACCESS_TOKEN` / `X_OAUTH2_REFRESH_TOKEN`；以及 OAuth1 媒体上传相关 `X_CONSUMER_KEY`、`X_CONSUMER_SECRET`、`X_ACCESS_TOKEN`、`X_ACCESS_TOKEN_SECRET` 等。  
 - X 引用转帖：`X_LAST_POST_ID`（服务会在每次 X 发帖成功后自动更新，可配合 `x_reply_to_previous=true` 使用）。  
-- 币安广场：`SQUARE_OPENAPI_KEY`。  
+- 币安广场：`SQUARE_OPENAPI_KEY` 或 `BINANCE_SQUARE_OPENAPI_KEY`（Square OpenAPI；与 [square-post skill](https://github.com/binance/binance-skills-hub/tree/main/skills/binance/square-post) 一致）。
 - 其他：`X_OAUTH1_CALLBACK` 等见代码。
 
 ## 本地运行与容器

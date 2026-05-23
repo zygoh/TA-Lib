@@ -175,8 +175,8 @@ async def distribute(
 ):
     """
     单接口统一分发到 Telegram / X / Binance Square。
-    - TG 与 X：优先图文，缺图降级纯文本
-    - Square：仅文本
+    - 三渠道均支持图文：有图优先图文，缺图降级纯文本
+    - Square：`#topic` 与 `$COIN` 标签须写在 `text` 正文内，由 Square OpenAPI 服务端解析（见 Binance square-post skill）
     """
     target = ensure_symbol_usdt(symbol)
     clean_text = text.strip()

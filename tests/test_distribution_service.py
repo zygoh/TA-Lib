@@ -1,4 +1,5 @@
 from contextlib import ExitStack
+import json
 import unittest
 from unittest.mock import patch
 
@@ -76,6 +77,106 @@ class XQuotePreviousTests(unittest.TestCase):
         self.assertNotIn("quote_tweet_id", payload)
         self.assertIs(result["quote_previous"], False)
         self.assertIn("without quote tweet", result["quote_previous_note"])
+
+
+class SquareSendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_square_text_only_publish(self):
+        captured: dict = {}
+
+        class FakeResp:
+            def __init__(self, status: int, payload: dict):
+                self.status = status
+                self._payload = payload
+
+            async def text(self):
+                return json.dumps(self._payload)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+        class FakeSession:
+            async def post(self, url, json=None, headers=None):
+                captured["url"] = url
+                captured["json"] = json
+                return FakeResp(200, {"code": "000000", "data": {"id": "sq1", "shareLink": "https://example/sq1"}})
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+        with patch.object(ds, "_read_square_api_key", return_value=("key", "process_env")):
+            with patch.object(ds.aiohttp, "ClientSession", return_value=FakeSession()):
+                result = await ds._send_square("Hello #crypto $BTC")
+
+        self.assertTrue(result["sent"])
+        self.assertEqual(result["mode"], "text")
+        self.assertEqual(captured["json"]["bodyTextOnly"], "Hello #crypto $BTC")
+        self.assertEqual(captured["json"]["contentType"], 1)
+        self.assertNotIn("imageList", captured["json"])
+
+    async def test_square_image_post_includes_image_list(self):
+        captured: dict = {"posts": []}
+
+        class FakeResp:
+            def __init__(self, status: int, payload: dict | str):
+                self.status = status
+                self._payload = payload
+
+            async def text(self):
+                return self._payload if isinstance(self._payload, str) else json.dumps(self._payload)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+        class FakeSession:
+            async def post(self, url, json=None, headers=None):
+                captured["posts"].append({"url": url, "json": json})
+                if url.endswith("/image/presignedUrl"):
+                    return FakeResp(
+                        200,
+                        {
+                            "code": "000000",
+                            "data": {"presignedUrl": "https://s3.example/upload", "fileTicket": "ticket-1"},
+                        },
+                    )
+                if url.endswith("/image/imageStatus"):
+                    return FakeResp(200, {"code": "000000", "data": {"status": 1, "imageUrl": "https://cdn.example/img.png"}})
+                if url.endswith("/content/add"):
+                    return FakeResp(200, {"code": "000000", "data": {"id": "sq2", "shareLink": "https://example/sq2"}})
+                raise AssertionError(f"unexpected post url: {url}")
+
+            async def put(self, url, data=None, headers=None):
+                captured["put"] = {"url": url, "len": len(data or b""), "headers": headers}
+                return FakeResp(200, "")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+        with patch.object(ds, "_read_square_api_key", return_value=("key", "process_env")):
+            with patch.object(ds.aiohttp, "ClientSession", return_value=FakeSession()):
+                result = await ds._send_square(
+                    "Chart #SOL $SOL",
+                    image_bytes=b"\x89PNG",
+                    image_filename="chart.png",
+                    image_content_type="image/png",
+                )
+
+        self.assertTrue(result["sent"])
+        self.assertEqual(result["mode"], "image+text")
+        publish = captured["posts"][-1]["json"]
+        self.assertEqual(publish["imageList"], ["https://cdn.example/img.png"])
+        self.assertEqual(publish["bodyTextOnly"], "Chart #SOL $SOL")
 
 
 if __name__ == "__main__":
