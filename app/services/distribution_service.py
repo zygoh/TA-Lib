@@ -342,7 +342,10 @@ def _send_x_sync(
     mode_tag: str
     use_oauth2 = False
 
-    if oauth2_ready:
+    # 有图片时优先 OAuth 1.0a：v1.1 media upload 只需 1 次请求，v2 需要 3 次（init/append/finalize）
+    prefer_oauth2 = oauth2_ready and not (image_bytes and oauth1_ready)
+
+    if prefer_oauth2:
         try:
             mode_tag = "oauth2+xdk"
             client = XdkClient(
