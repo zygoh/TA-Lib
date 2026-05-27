@@ -626,17 +626,24 @@ async def get_sentiment(symbol: str) -> Dict[str, Any]:
 
 
 async def get_crypto_bundle(symbol: str) -> Dict[str, Any]:
+    from app.services.symbol_pipeline_store import build_hot_board_supplement, hot_board_get
+
     indicators: Dict[str, Any] = {}
     for interval in ["15m", "1h", "2h", "4h", "1d"]:
         indicators[interval] = fetch_technical_data(symbol, interval, for_chart=False)
     market = await fetch_market_snapshot(symbol)
     sentiment = await get_sentiment(symbol)
-    return {
+    payload: Dict[str, Any] = {
         "target": symbol,
         "technical_analysis": indicators,
         "market_analysis": market,
         "sentiment_analysis": sentiment,
+        "hot_board_supplement": None,
     }
+    entry = hot_board_get(symbol)
+    if entry:
+        payload["hot_board_supplement"] = build_hot_board_supplement(entry)
+    return payload
 
 
 _chart_service = KlineChartService()

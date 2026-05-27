@@ -5,12 +5,14 @@
 import logging
 from datetime import datetime
 import io
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw
 
 from app.models.schemas import HealthResponse
 from app.routers import indicators, images, trading, crypto_mcp, oauth_x
+from app.services.pipeline_lifecycle import pipeline_lifespan
 
 # 配置日志 - 只输出到控制台
 logging.basicConfig(
@@ -22,6 +24,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def _app_lifespan(application: FastAPI):
+    async with pipeline_lifespan(application):
+        yield
+
+
 # 创建FastAPI应用
 app = FastAPI(
     title="币安技术指标计算API",
@@ -29,6 +37,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=_app_lifespan,
 )
 
 # 添加CORS中间件

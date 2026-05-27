@@ -24,6 +24,24 @@ from app.models.crypto_mcp_schemas import (
     CryptoMcpAllResponse,
     DistributeResponse,
     GainersResponse,
+    InboxConsumeRequest,
+    InboxConsumeResponse,
+    InboxSeedRequest,
+    InboxSeedResponse,
+    InboxItem,
+    HotBoardUpsertRequest,
+    HotBoardUpsertResponse,
+    HotBoardEntry,
+    PickerSnapshotResponse,
+    FuturesSymbolsResponse,
+)
+from app.services.futures_symbols import list_trading_symbols, validate_symbol_for_hot_board
+from app.services.symbol_pipeline_store import (
+    inbox_append,
+    inbox_consume,
+    inbox_delete,
+    hot_board_upsert,
+    hot_board_list_active,
 )
 from app.services.crypto_mcp_service import (
     ensure_symbol_usdt,
@@ -73,6 +91,91 @@ async def news(symbol: str):
     """指定币种免费新闻聚合（等价于 sentiment，便于按涨幅榜选币后直查）"""
     target = ensure_symbol_usdt(symbol)
     return await get_sentiment(target)
+
+
+@router.post("/subscription-inbox/seed", response_model=InboxSeedResponse)
+async def subscription_inbox_seed(body: InboxSeedRequest):
+    """联调测试：写入 raw 收件箱（模拟 Telethon，不经过解析）。"""
+    channel = (body.channel or "wizzalert").lower()
+    ids: list[str] = []
+    for item in body.items:
+        if not (item.raw_text or "").strip():
+            continue
+        mid = item.message_id if item.message_id is not None else int(datetime.now().timestamp())
+        row = inbox_append(
+            channel_username=channel,
+            message_id=mid,
+            permalink=f"https://t.me/{channel}/{mid}",
+            raw_text=item.raw_text.strip(),
+        )
+        ids.append(row["inbox_id"])
+    return {"inserted": len(ids), "inbox_ids": ids}
+
+
+@router.post("/subscription-inbox/consume", response_model=InboxConsumeResponse)
+async def subscription_inbox_consume(body: InboxConsumeRequest | None = None):
+    """取出待处理订阅消息并物理删除（consume 即删）。"""
+    req = body or InboxConsumeRequest()
+    rows = inbox_consume(channel=req.channel, limit=req.limit)
+    return {"items": [InboxItem(**row) for row in rows]}
+
+
+@router.delete("/subscription-inbox/{inbox_id}")
+async def subscription_inbox_delete(inbox_id: str):
+    """单条删除收件箱（consume 已批量删除时通常不需要）。"""
+    if not inbox_delete(inbox_id):
+        raise HTTPException(status_code=404, detail="inbox_id 不存在")
+    return {"ok": True}
+
+
+@router.post("/hot-board/upsert", response_model=HotBoardUpsertResponse)
+async def hot_board_upsert_endpoint(body: HotBoardUpsertRequest):
+    """清洗后的热榜写入（ingest skill / Merger）。"""
+    if body.source not in ("wizz_alert", "merger_analyzer"):
+        raise HTTPException(status_code=400, detail="source 必须是 wizz_alert 或 merger_analyzer")
+    try:
+        symbol = await validate_symbol_for_hot_board(body.symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    entry = hot_board_upsert(
+        {
+            "symbol": symbol,
+            "base_asset": body.base_asset,
+            "source": body.source,
+            "wizz": body.wizz,
+            "merged_for_sentiment": body.merged_for_sentiment,
+            "merger": body.merger,
+        }
+    )
+    return {"ok": True, "entry": HotBoardEntry(**entry)}
+
+
+@router.get("/hot-board/picker-snapshot", response_model=PickerSnapshotResponse)
+async def hot_board_picker_snapshot(
+    max_symbols: int = Query(10, ge=1, le=50),
+    include_bundle: bool = Query(True),
+):
+    """供 crypto-symbol-picker 读取有效热榜（可选附带 bundle）。"""
+    time_data = get_shanghai_time()
+    rows = hot_board_list_active(limit=max_symbols)
+    entries: list[HotBoardEntry] = []
+    for row in rows:
+        bundle = await get_crypto_bundle(row["symbol"]) if include_bundle else None
+        item = {**row, "bundle": bundle}
+        entries.append(HotBoardEntry(**item))
+    return {
+        "board_ttl_hours": 12,
+        "as_of": time_data["full"],
+        "entries": entries,
+    }
+
+
+@router.get("/futures-symbols", response_model=FuturesSymbolsResponse)
+async def futures_symbols():
+    """TRADING 状态的币安 U 本位合约列表（供 ingest 校验）。"""
+    symbols = await list_trading_symbols()
+    return {"count": len(symbols), "symbols": symbols}
 
 
 @router.get("/gainers", response_model=GainersResponse)

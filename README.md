@@ -35,7 +35,12 @@
 - **`GET /crypto-mcp/news?symbol=...`** — 指定币种免费新闻聚合（与 `sentiment` 同源，便于从涨幅榜挑选 symbol 后单独查询新闻）。
 - **`GET /crypto-mcp/charts?symbol=...`** — 生成 2h/4h 等 K 线输出信息（见实现）。
 - **`GET /crypto-mcp/charts/image?...`** — 直接返回已生成的 **PNG 图片**（用于 Agent「看图」）。
-- **`GET /crypto-mcp/all?symbol=...`** — 汇总时间与 bundle，并在流程中生成 K 线（**crypto-analyst 主调**）。
+- **`GET /crypto-mcp/all?symbol=...`** — 汇总时间与 bundle（若 symbol 在 12h 热榜，含 `bundle.hot_board_supplement`），并生成 K 线（**crypto-analyst 主调**）。
+- **`POST /crypto-mcp/subscription-inbox/seed`** — 联调专用：写入测试 raw（模拟 Telethon）。
+- **`POST /crypto-mcp/subscription-inbox/consume`** — 取出 @wizzalert 待处理 raw 并**物理删除**（ingest skill）。
+- **`POST /crypto-mcp/hot-board/upsert`** — 清洗后写入热榜（ingest / Merger）。
+- **`GET /crypto-mcp/hot-board/picker-snapshot`** — 热榜 + 可选 bundle（picker skill）。
+- **`GET /crypto-mcp/futures-symbols`** — 币安 U 本位 TRADING 合约列表（ingest 校验）。
 - **`POST /crypto-mcp/distribute`** — 表单提交 `symbol`、`text`、可选 `image` 文件，**统一向 Telegram、X、币安 Square 等渠道分发**（与 `zygo-skills` 里 `distribute-post` 能力对应）；支持可选 `x_reply_to_previous=true`（在 X 上用引用转帖方式引用上一条成功帖子）。
 
   **Binance Square 行为**（对齐 [Binance square-post skill](https://github.com/binance/binance-skills-hub/tree/main/skills/binance/square-post)）：
@@ -52,6 +57,11 @@
 
 **币安**  
 - `BINANCE_API_KEY` / `BINANCE_API_SECRET` — 行情、账户、交易等能力。
+
+**选币管线（Telethon 监听 + 热榜，见工作区 `docs/DESIGN-symbol-selection-pipeline.md`）**  
+- `TG_LISTEN_API_ID` / `TG_LISTEN_API_HASH` — Telethon 用户号（监听 @wizzalert，仅写收件箱）。  
+- `TG_LISTEN_SESSION_PATH` — 可选，session 文件前缀，默认 `data/telegram_listen`。  
+- `WIZZ_ALERT_CHANNEL` — 默认 `wizzalert`。
 
 **分发（`distribution_service`）**  
 - Telegram：`TG_BOT_TOKEN`、`TG_CHAT_ID` 等（与上部分可复用，语义以发送渠道为准）。  
