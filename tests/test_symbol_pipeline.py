@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -25,43 +24,34 @@ class SymbolPipelineStoreTests(unittest.TestCase):
         self._db_patch.stop()
         self._tmp.cleanup()
 
-    def test_inbox_consume_deletes_rows(self) -> None:
-        store.inbox_append(
-            channel_username="wizzalert",
-            message_id=1,
-            permalink="https://t.me/wizzalert/1",
-            raw_text="🔻 HIGH · -10% (24h)",
-        )
+    def test_inbox_consume_returns_only_raw_text(self) -> None:
+        store.inbox_append(channel_username="wizzalert", raw_text="🔻 HIGH · -10% (24h)")
         items = store.inbox_consume(channel="wizzalert", limit=10)
-        self.assertEqual(len(items), 1)
+        self.assertEqual(items, [{"raw_text": "🔻 HIGH · -10% (24h)"}])
         again = store.inbox_consume(channel="wizzalert", limit=10)
         self.assertEqual(again, [])
 
-    def test_hot_board_upsert_merge_latest(self) -> None:
+    def test_hot_board_wizz_upsert_alert_reason(self) -> None:
         store.hot_board_upsert(
             {
-                "symbol": "HIGHUSDT",
-                "base_asset": "HIGH",
+                "symbol": "ZZTESTHIGHUSDT",
                 "source": "wizz_alert",
-                "wizz": {"score": 50},
-                "merged_for_sentiment": "old",
+                "alert_reason": "old reason",
             }
         )
         store.hot_board_upsert(
             {
-                "symbol": "HIGHUSDT",
-                "base_asset": "HIGH",
+                "symbol": "ZZTESTHIGHUSDT",
                 "source": "wizz_alert",
-                "wizz": {"score": 60},
-                "merged_for_sentiment": "new",
+                "alert_reason": "new reason",
             }
         )
-        entry = store.hot_board_get("HIGHUSDT")
+        entry = store.hot_board_get("ZZTESTHIGHUSDT")
         assert entry is not None
         self.assertEqual(entry["hit_count"], 2)
-        self.assertIn("wizz_alert", entry["sources"])
-        self.assertEqual(entry["wizz"]["score"], 60)
-        self.assertEqual(entry["merged_for_sentiment"], "new")
+        self.assertEqual(entry["alert_reason"], "new reason")
+        self.assertNotIn("wizz", entry)
+        self.assertNotIn("merger", entry)
 
     def test_hot_board_merge_sources(self) -> None:
         store.hot_board_upsert(
@@ -75,15 +65,15 @@ class SymbolPipelineStoreTests(unittest.TestCase):
             {
                 "symbol": "BTCUSDT",
                 "source": "wizz_alert",
-                "wizz": {"trend_label": "续涨"},
-                "merged_for_sentiment": "wizz text",
+                "alert_reason": "wizz cleaned text",
             }
         )
         entry = store.hot_board_get("BTCUSDT")
         assert entry is not None
         self.assertEqual(set(entry["sources"]), {"merger_analyzer", "wizz_alert"})
-        self.assertEqual(entry["merger"]["rule"], "test")
-        self.assertEqual(entry["wizz"]["trend_label"], "续涨")
+        self.assertEqual(entry["alert_reason"], "wizz cleaned text")
+        sup = store.build_hot_board_supplement(entry)
+        self.assertEqual(sup, {"sources": ["merger_analyzer", "wizz_alert"], "alert_reason": "wizz cleaned text"})
 
 
 if __name__ == "__main__":

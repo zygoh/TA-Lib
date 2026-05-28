@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -44,6 +43,52 @@ def _now_iso() -> str:
     return datetime.now(_SH_TZ).isoformat()
 
 
+def _migrate_inbox(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(subscription_inbox)").fetchall()}
+    if not cols:
+        return
+    if "inbox_id" not in cols:
+        return
+    conn.execute(
+        """
+        CREATE TABLE subscription_inbox_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            received_at TEXT NOT NULL,
+            channel_username TEXT NOT NULL,
+            raw_text TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO subscription_inbox_new (received_at, channel_username, raw_text)
+        SELECT received_at, channel_username, raw_text FROM subscription_inbox
+        """
+    )
+    conn.execute("DROP TABLE subscription_inbox")
+    conn.execute("ALTER TABLE subscription_inbox_new RENAME TO subscription_inbox")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_inbox_channel ON subscription_inbox(channel_username)"
+    )
+
+
+def _migrate_hot_board(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(hot_board)").fetchall()}
+    if not cols:
+        return
+    if "alert_reason" not in cols:
+        conn.execute("ALTER TABLE hot_board ADD COLUMN alert_reason TEXT")
+    if "merged_for_sentiment" in cols:
+        conn.execute(
+            """
+            UPDATE hot_board
+            SET alert_reason = merged_for_sentiment
+            WHERE alert_reason IS NULL AND merged_for_sentiment IS NOT NULL
+              AND merged_for_sentiment != ''
+            """
+        )
+
+
 def _ensure_schema() -> None:
     global _SCHEMA_READY
     if _SCHEMA_READY:
@@ -55,11 +100,9 @@ def _ensure_schema() -> None:
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS subscription_inbox (
-                    inbox_id TEXT PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     received_at TEXT NOT NULL,
                     channel_username TEXT NOT NULL,
-                    message_id INTEGER,
-                    permalink TEXT,
                     raw_text TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_inbox_channel
@@ -73,80 +116,64 @@ def _ensure_schema() -> None:
                     expires_at TEXT NOT NULL,
                     sources TEXT NOT NULL,
                     hit_count INTEGER NOT NULL DEFAULT 1,
-                    wizz_json TEXT,
-                    merged_for_sentiment TEXT,
+                    alert_reason TEXT,
                     merger_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_hot_board_expires
                     ON hot_board(expires_at);
                 """
             )
+            _migrate_inbox(conn)
+            _migrate_hot_board(conn)
         _SCHEMA_READY = True
 
 
-def inbox_append(
-    *,
-    channel_username: str,
-    message_id: int | None,
-    permalink: str,
-    raw_text: str,
-) -> Dict[str, Any]:
+def inbox_append(*, channel_username: str, raw_text: str) -> None:
+    """Telethon 只落原文；不存 message_id / permalink。"""
     _ensure_schema()
-    inbox_id = str(uuid.uuid4())
-    received_at = _now_iso()
+    text = (raw_text or "").strip()
+    if not text:
+        return
     with _DB_LOCK, _connection() as conn:
         conn.execute(
             """
-            INSERT INTO subscription_inbox
-            (inbox_id, received_at, channel_username, message_id, permalink, raw_text)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO subscription_inbox (received_at, channel_username, raw_text)
+            VALUES (?, ?, ?)
             """,
-            (inbox_id, received_at, channel_username.lower(), message_id, permalink, raw_text),
+            (_now_iso(), channel_username.lower(), text),
         )
-    return {
-        "inbox_id": inbox_id,
-        "received_at": received_at,
-        "channel_username": channel_username.lower(),
-        "message_id": message_id,
-        "permalink": permalink,
-        "raw_text": raw_text,
-    }
 
 
-def inbox_consume(*, channel: str = "wizzalert", limit: int = 50) -> List[Dict[str, Any]]:
+def inbox_consume(*, channel: str = "wizzalert", limit: int = 50) -> List[Dict[str, str]]:
+    """取出待处理原文并物理删除；对 skill 仅返回 raw_text。"""
     _ensure_schema()
     channel = channel.lower().strip()
     limit = max(1, min(int(limit), 200))
     with _DB_LOCK, _connection() as conn:
         rows = conn.execute(
             """
-            SELECT inbox_id, received_at, channel_username, message_id, permalink, raw_text
-            FROM subscription_inbox
+            SELECT id, raw_text FROM subscription_inbox
             WHERE channel_username = ?
-            ORDER BY received_at ASC
+            ORDER BY id ASC
             LIMIT ?
             """,
             (channel, limit),
         ).fetchall()
-        items = [dict(row) for row in rows]
-        if items:
-            placeholders = ",".join("?" for _ in items)
-            ids = [item["inbox_id"] for item in items]
+        items = [{"raw_text": row["raw_text"]} for row in rows]
+        if rows:
+            placeholders = ",".join("?" for _ in rows)
+            ids = [row["id"] for row in rows]
             conn.execute(
-                f"DELETE FROM subscription_inbox WHERE inbox_id IN ({placeholders})",
+                f"DELETE FROM subscription_inbox WHERE id IN ({placeholders})",
                 ids,
             )
     return items
 
 
 def inbox_delete(inbox_id: str) -> bool:
+    """兼容旧 DELETE 路由；新表无 inbox_id 时恒为 false。"""
     _ensure_schema()
-    with _DB_LOCK, _connection() as conn:
-        cur = conn.execute(
-            "DELETE FROM subscription_inbox WHERE inbox_id = ?",
-            (inbox_id,),
-        )
-        return cur.rowcount > 0
+    return False
 
 
 def hot_board_upsert(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -156,10 +183,11 @@ def hot_board_upsert(entry: Dict[str, Any]) -> Dict[str, Any]:
     expires = (datetime.now(_SH_TZ) + timedelta(hours=12)).isoformat()
     source = entry["source"]
     new_sources = [source]
-    wizz_json = json.dumps(entry["wizz"], ensure_ascii=False) if entry.get("wizz") is not None else None
-    merger_json = json.dumps(entry["merger"], ensure_ascii=False) if entry.get("merger") is not None else None
-    merged = entry.get("merged_for_sentiment")
     base_asset = entry.get("base_asset") or symbol.replace("USDT", "")
+    alert_reason = (entry.get("alert_reason") or "").strip() or None
+    merger_json = (
+        json.dumps(entry["merger"], ensure_ascii=False) if entry.get("merger") is not None else None
+    )
 
     with _DB_LOCK, _connection() as conn:
         row = conn.execute(
@@ -174,8 +202,8 @@ def hot_board_upsert(entry: Dict[str, Any]) -> Dict[str, Any]:
                 """
                 INSERT INTO hot_board
                 (symbol, base_asset, first_seen_at, last_seen_at, expires_at, sources,
-                 hit_count, wizz_json, merged_for_sentiment, merger_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 hit_count, alert_reason, merger_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     symbol,
@@ -185,8 +213,7 @@ def hot_board_upsert(entry: Dict[str, Any]) -> Dict[str, Any]:
                     expires,
                     json.dumps(sources, ensure_ascii=False),
                     hit_count,
-                    wizz_json,
-                    merged,
+                    alert_reason if source == "wizz_alert" else None,
                     merger_json,
                 ),
             )
@@ -194,12 +221,9 @@ def hot_board_upsert(entry: Dict[str, Any]) -> Dict[str, Any]:
             old_sources = json.loads(row["sources"] or "[]")
             sources = list(dict.fromkeys(old_sources + new_sources))
             hit_count = int(row["hit_count"] or 0) + 1
-            first_seen_at = row["first_seen_at"]
-            keep_wizz = wizz_json if source == "wizz_alert" else row["wizz_json"]
-            keep_merged = merged if source == "wizz_alert" and merged is not None else row["merged_for_sentiment"]
-            if source == "wizz_alert":
-                keep_wizz = wizz_json
-                keep_merged = merged
+            keep_alert = row["alert_reason"]
+            if source == "wizz_alert" and alert_reason:
+                keep_alert = alert_reason
             keep_merger = merger_json if source == "merger_analyzer" else row["merger_json"]
             conn.execute(
                 """
@@ -209,8 +233,7 @@ def hot_board_upsert(entry: Dict[str, Any]) -> Dict[str, Any]:
                     expires_at = ?,
                     sources = ?,
                     hit_count = ?,
-                    wizz_json = ?,
-                    merged_for_sentiment = ?,
+                    alert_reason = ?,
                     merger_json = ?
                 WHERE symbol = ?
                 """,
@@ -220,8 +243,7 @@ def hot_board_upsert(entry: Dict[str, Any]) -> Dict[str, Any]:
                     expires,
                     json.dumps(sources, ensure_ascii=False),
                     hit_count,
-                    keep_wizz,
-                    keep_merged,
+                    keep_alert,
                     keep_merger,
                     symbol,
                 ),
@@ -269,9 +291,15 @@ def hot_board_purge_expired() -> int:
 
 
 def _row_to_entry(row: sqlite3.Row) -> Dict[str, Any]:
-    wizz = json.loads(row["wizz_json"]) if row["wizz_json"] else None
-    merger = json.loads(row["merger_json"]) if row["merger_json"] else None
     sources = json.loads(row["sources"] or "[]")
+    alert_reason = (row["alert_reason"] or "").strip() or None
+    if not alert_reason:
+        try:
+            legacy = (row["merged_for_sentiment"] or "").strip()
+        except (KeyError, IndexError):
+            legacy = ""
+        if legacy:
+            alert_reason = legacy
     return {
         "symbol": row["symbol"],
         "base_asset": row["base_asset"],
@@ -280,26 +308,12 @@ def _row_to_entry(row: sqlite3.Row) -> Dict[str, Any]:
         "expires_at": row["expires_at"],
         "sources": sources,
         "hit_count": row["hit_count"],
-        "wizz": wizz,
-        "merged_for_sentiment": row["merged_for_sentiment"],
-        "merger": merger,
+        "alert_reason": alert_reason,
     }
 
 
 def build_hot_board_supplement(entry: Dict[str, Any]) -> Dict[str, Any]:
-    wizz = entry.get("wizz") or {}
-    subscription = wizz.get("subscription") or {
-        "type": "telegram_channel",
-        "username": "wizzalert",
-        "title": "Wizz 异动警报",
-    }
     return {
         "sources": entry.get("sources") or [],
-        "subscription": subscription,
-        "wizz": wizz,
-        "merger": entry.get("merger"),
-        "hit_count": entry.get("hit_count"),
-        "last_seen_at": entry.get("last_seen_at"),
-        "permalink": wizz.get("permalink"),
-        "merged_for_sentiment": entry.get("merged_for_sentiment") or "",
+        "alert_reason": entry.get("alert_reason") or "",
     }

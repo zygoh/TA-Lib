@@ -52,16 +52,11 @@ class CryptoBundleResponse(BaseModel):
     sentiment_analysis: Dict[str, Any]
     hot_board_supplement: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="当 symbol 在 12h 热榜时附带 Wizz/Merger 补充事实",
+        description="当 symbol 在 12h 热榜时附带 sources + alert_reason（异动原因）",
     )
 
 
 class InboxItem(BaseModel):
-    inbox_id: str
-    received_at: str
-    channel_username: str
-    message_id: Optional[int] = None
-    permalink: Optional[str] = None
     raw_text: str
 
 
@@ -93,9 +88,14 @@ class HotBoardUpsertRequest(BaseModel):
     symbol: str
     source: str = Field(..., description="wizz_alert | merger_analyzer")
     base_asset: Optional[str] = None
-    wizz: Optional[Dict[str, Any]] = None
-    merged_for_sentiment: Optional[str] = None
-    merger: Optional[Dict[str, Any]] = None
+    alert_reason: Optional[str] = Field(
+        default=None,
+        description="异动原因：清洗后的 Wizz 原文；source=wizz_alert 时必填",
+    )
+    merger: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="仅 merger_analyzer 内部评分用，不返回给 Agent",
+    )
 
 
 class HotBoardEntry(BaseModel):
@@ -106,9 +106,10 @@ class HotBoardEntry(BaseModel):
     expires_at: str
     sources: List[str]
     hit_count: int
-    wizz: Optional[Dict[str, Any]] = None
-    merged_for_sentiment: Optional[str] = None
-    merger: Optional[Dict[str, Any]] = None
+    alert_reason: Optional[str] = Field(
+        default=None,
+        description="异动原因（清洗后的订阅原文）；无 Wizz 入榜时为空",
+    )
     bundle: Optional[Dict[str, Any]] = None
 
 

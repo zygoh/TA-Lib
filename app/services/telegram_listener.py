@@ -49,16 +49,13 @@ async def telegram_listener_loop(stop_event: asyncio.Event) -> None:
             text = (event.message.message or "").strip()
             if not text:
                 return
-            username = channel
-            message_id = int(event.message.id)
-            permalink = f"https://t.me/{username}/{message_id}"
-            inbox_append(
-                channel_username=username,
-                message_id=message_id,
-                permalink=permalink,
-                raw_text=text,
+            inbox_append(channel_username=channel, raw_text=text)
+            logger.info(
+                "inbox append channel=%s message_id=%s len=%d",
+                channel,
+                int(event.message.id),
+                len(text),
             )
-            logger.info("inbox append channel=%s message_id=%s len=%d", username, message_id, len(text))
         except Exception:
             logger.exception("telegram handler failed")
 

@@ -97,19 +97,13 @@ async def news(symbol: str):
 async def subscription_inbox_seed(body: InboxSeedRequest):
     """联调测试：写入 raw 收件箱（模拟 Telethon，不经过解析）。"""
     channel = (body.channel or "wizzalert").lower()
-    ids: list[str] = []
+    inserted = 0
     for item in body.items:
         if not (item.raw_text or "").strip():
             continue
-        mid = item.message_id if item.message_id is not None else int(datetime.now().timestamp())
-        row = inbox_append(
-            channel_username=channel,
-            message_id=mid,
-            permalink=f"https://t.me/{channel}/{mid}",
-            raw_text=item.raw_text.strip(),
-        )
-        ids.append(row["inbox_id"])
-    return {"inserted": len(ids), "inbox_ids": ids}
+        inbox_append(channel_username=channel, raw_text=item.raw_text.strip())
+        inserted += 1
+    return {"inserted": inserted, "inbox_ids": []}
 
 
 @router.post("/subscription-inbox/consume", response_model=InboxConsumeResponse)
@@ -133,6 +127,8 @@ async def hot_board_upsert_endpoint(body: HotBoardUpsertRequest):
     """清洗后的热榜写入（ingest skill / Merger）。"""
     if body.source not in ("wizz_alert", "merger_analyzer"):
         raise HTTPException(status_code=400, detail="source 必须是 wizz_alert 或 merger_analyzer")
+    if body.source == "wizz_alert" and not (body.alert_reason or "").strip():
+        raise HTTPException(status_code=400, detail="wizz_alert 必须提供 alert_reason（异动原因）")
     try:
         symbol = await validate_symbol_for_hot_board(body.symbol)
     except ValueError as exc:
@@ -143,8 +139,7 @@ async def hot_board_upsert_endpoint(body: HotBoardUpsertRequest):
             "symbol": symbol,
             "base_asset": body.base_asset,
             "source": body.source,
-            "wizz": body.wizz,
-            "merged_for_sentiment": body.merged_for_sentiment,
+            "alert_reason": (body.alert_reason or "").strip() or None,
             "merger": body.merger,
         }
     )

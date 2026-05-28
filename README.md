@@ -36,7 +36,7 @@
 - **`GET /crypto-mcp/charts?symbol=...`** — 生成 2h/4h 等 K 线输出信息（见实现）。
 - **`GET /crypto-mcp/charts/image?...`** — 直接返回已生成的 **PNG 图片**（用于 Agent「看图」）。
 - **`GET /crypto-mcp/all?symbol=...`** — 汇总时间与 bundle（若 symbol 在 12h 热榜，含 `bundle.hot_board_supplement`），并生成 K 线（**crypto-analyst 主调**）。
-- **`POST /crypto-mcp/subscription-inbox/seed`** — 仅开发用假数据；**生产验收请用** `scripts/test_pipeline_api.py`（只读真实热榜，不 seed）。
+- **`POST /crypto-mcp/subscription-inbox/seed`** — 仅开发用假数据；**生产验收** `uv run python scripts/test_pipeline_api.py`（默认 `https://do2ge.com/tail`，仅 §3 选币管线 GET；`--consume-inbox` 才测 POST consume）。
 - **`POST /crypto-mcp/subscription-inbox/consume`** — 取出 @wizzalert 待处理 raw 并**物理删除**（ingest skill）。
 - **`POST /crypto-mcp/hot-board/upsert`** — 清洗后写入热榜（ingest / Merger）。
 - **`GET /crypto-mcp/hot-board/picker-snapshot`** — 热榜 + 可选 bundle（picker skill）。
