@@ -95,6 +95,6 @@ uvicorn app.app:app --host 0.0.0.0 --port 8000
 
 ## 相关仓库
 
-- **zygo-skills**：日更 **crypto-post-flow**、**baoyu-xhs-images** 等技能包，与本服务的 **`crypto-mcp` 接口** 配套使用。
+- **zygo-skills**：日更 **crypto-post-flow**（含 `flow-image` 等子技能），与本服务 **`crypto-mcp` 接口** 配套。
 
 若你需要「最小可跑清单」，请至少配置：**服务监听、币安只读或业务所需 key、分发文案渠道对应的 token。**

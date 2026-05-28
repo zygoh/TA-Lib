@@ -156,7 +156,7 @@ async def hot_board_picker_snapshot(
     max_symbols: int = Query(10, ge=1, le=50),
     include_bundle: bool = Query(True),
 ):
-    """供 crypto-symbol-picker 读取有效热榜（可选附带 bundle）。"""
+    """供 hot-board-pick（crypto-post-flow Stage 0）读取有效热榜（可选附带 bundle）。"""
     time_data = get_shanghai_time()
     rows = hot_board_list_active(limit=max_symbols)
     entries: list[HotBoardEntry] = []
