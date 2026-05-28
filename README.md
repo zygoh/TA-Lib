@@ -36,7 +36,7 @@
 - **`GET /crypto-mcp/charts?symbol=...`** — 生成 2h/4h 等 K 线输出信息（见实现）。
 - **`GET /crypto-mcp/charts/image?...`** — 直接返回已生成的 **PNG 图片**（用于 Agent「看图」）。
 - **`GET /crypto-mcp/all?symbol=...`** — 汇总时间与 bundle（若 symbol 在 12h 热榜，含 `bundle.hot_board_supplement`），并生成 K 线（**crypto-analyst 主调**）。
-- **`POST /crypto-mcp/subscription-inbox/seed`** — 联调专用：写入测试 raw（模拟 Telethon）。
+- **`POST /crypto-mcp/subscription-inbox/seed`** — 仅开发用假数据；**生产验收请用** `scripts/test_pipeline_api.py`（只读真实热榜，不 seed）。
 - **`POST /crypto-mcp/subscription-inbox/consume`** — 取出 @wizzalert 待处理 raw 并**物理删除**（ingest skill）。
 - **`POST /crypto-mcp/hot-board/upsert`** — 清洗后写入热榜（ingest / Merger）。
 - **`GET /crypto-mcp/hot-board/picker-snapshot`** — 热榜 + 可选 bundle（picker skill）。
@@ -61,7 +61,8 @@
 **选币管线（Telethon 监听 + 热榜，见工作区 `docs/DESIGN-symbol-selection-pipeline.md`）**  
 - `TG_LISTEN_API_ID` / `TG_LISTEN_API_HASH` — Telethon 用户号（监听 @wizzalert，仅写收件箱）。  
 - `TG_LISTEN_SESSION_PATH` — 可选，session 文件前缀，默认 `data/telegram_listen`。  
-- `WIZZ_ALERT_CHANNEL` — 默认 `wizzalert`。
+- `WIZZ_ALERT_CHANNEL` — 默认 `wizzalert`。  
+- **Merger VOS**：后台每 15min 扫盘入热榜（规则见 `app/services/merger_analyzer.py` 顶部常量）。
 
 **分发（`distribution_service`）**  
 - Telegram：`TG_BOT_TOKEN`、`TG_CHAT_ID` 等（与上部分可复用，语义以发送渠道为准）。  
