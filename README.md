@@ -39,7 +39,7 @@
 - **`POST /crypto-mcp/subscription-inbox/seed`** — 仅开发用假数据；**生产验收** `uv run python scripts/test_pipeline_api.py`（默认 `https://do2ge.com/tail`，仅 §3 选币管线 GET；`--consume-inbox` 才测 POST consume）。
 - **`POST /crypto-mcp/subscription-inbox/consume`** — 取出 @wizzalert 待处理 raw 并**物理删除**（ingest skill）。
 - **`POST /crypto-mcp/hot-board/upsert`** — 热榜写入。ingest：`symbol` + `source=wizz_alert` + **`alert_reason`（必填）**；Merger：`source=merger_analyzer`（`merger` 仅库内评分，不返回 Agent）。
-- **`GET /crypto-mcp/hot-board/picker-snapshot`** — 热榜轻量候选（默认 `include_bundle=false`，排除 2h `pick_cooldown`）。`hot-board-pick` 常用 `max_symbols=10`。
+- **`GET /crypto-mcp/hot-board/picker-snapshot`** — 热榜候选；`include_pick_ta=true` 时服务端并发返回每条 `pick_ta`（1h/2h/4h+市场，无 RSS）。`hot-board-pick` 用 `max_symbols=100&include_pick_ta=true`；排除 2h `pick_cooldown`。
 - **`POST /crypto-mcp/pick-slot`** — `hot-board-pick` 提交选中币 + `candidate_symbols`（落选写 2h 冷却）。
 - **`GET /crypto-mcp/pick-slot?consume=true`** — `crypto-post-flow` Stage 0 认领待发帖单槽。
 - **`GET /crypto-mcp/futures-symbols`** — 币安 U 本位 TRADING 合约列表（ingest 校验）。

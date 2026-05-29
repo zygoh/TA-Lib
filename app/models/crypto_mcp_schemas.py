@@ -111,6 +111,10 @@ class HotBoardEntry(BaseModel):
         description="异动原因（清洗后的订阅原文）；无 Wizz 入榜时为空",
     )
     bundle: Optional[Dict[str, Any]] = None
+    pick_ta: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="选币用精简技术面（include_pick_ta=true）；无 RSS",
+    )
 
 
 class HotBoardUpsertResponse(BaseModel):

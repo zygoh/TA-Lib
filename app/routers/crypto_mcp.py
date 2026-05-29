@@ -57,6 +57,7 @@ from app.services.crypto_mcp_service import (
     fetch_top_gainers,
     generate_kline_charts,
 )
+from app.services.pick_ta_service import fetch_pick_ta_map
 from app.services.distribution_service import distribute_post
 
 logger = logging.getLogger(__name__)
@@ -154,16 +155,29 @@ async def hot_board_upsert_endpoint(body: HotBoardUpsertRequest):
 
 @router.get("/hot-board/picker-snapshot", response_model=PickerSnapshotResponse)
 async def hot_board_picker_snapshot(
-    max_symbols: int = Query(10, ge=1, le=50),
+    max_symbols: int = Query(50, ge=1, le=100),
     include_bundle: bool = Query(False),
+    include_pick_ta: bool = Query(False),
 ):
-    """供 hot-board-pick 读取有效热榜；默认不含 bundle，并排除 2h 冷却中的 symbol。"""
+    """供 hot-board-pick：有效热榜；include_pick_ta 时服务端并发聚合精简技术面。"""
+    if include_bundle and include_pick_ta:
+        raise HTTPException(
+            status_code=400,
+            detail="include_bundle 与 include_pick_ta 不可同时为 true",
+        )
     time_data = get_shanghai_time()
     rows = hot_board_list_for_picker(limit=max_symbols, exclude_cooldown=True)
+    pick_ta_map: dict[str, dict] = {}
+    if include_pick_ta and rows:
+        pick_ta_map = await fetch_pick_ta_map([r["symbol"] for r in rows])
     entries: list[HotBoardEntry] = []
     for row in rows:
-        bundle = await get_crypto_bundle(row["symbol"]) if include_bundle else None
-        item = {**row, "bundle": bundle}
+        sym = row["symbol"]
+        bundle = None
+        pick_ta = pick_ta_map.get(sym) if include_pick_ta else None
+        if include_bundle:
+            bundle = await get_crypto_bundle(sym)
+        item = {**row, "bundle": bundle, "pick_ta": pick_ta}
         entries.append(HotBoardEntry(**item))
     return {
         "board_ttl_hours": 12,
