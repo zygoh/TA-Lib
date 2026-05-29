@@ -17,6 +17,9 @@ _SCHEMA_READY = False
 
 _SH_TZ = timezone(timedelta(hours=8))
 
+PICK_COOLDOWN_HOURS = 2.0
+PICK_SLOT_PENDING_HOURS = 24.0
+
 
 def _db_path() -> Path:
     root = _repo_root()
@@ -121,6 +124,21 @@ def _ensure_schema() -> None:
                 );
                 CREATE INDEX IF NOT EXISTS idx_hot_board_expires
                     ON hot_board(expires_at);
+
+                CREATE TABLE IF NOT EXISTS pick_slot (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    symbol TEXT NOT NULL,
+                    selection_context TEXT NOT NULL,
+                    picked_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                );
+
+                CREATE TABLE IF NOT EXISTS pick_cooldown (
+                    symbol TEXT PRIMARY KEY,
+                    cooldown_until TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_pick_cooldown_until
+                    ON pick_cooldown(cooldown_until);
                 """
             )
             _migrate_inbox(conn)
@@ -266,19 +284,43 @@ def hot_board_get(symbol: str) -> Optional[Dict[str, Any]]:
 
 
 def hot_board_list_active(*, limit: int = 100) -> List[Dict[str, Any]]:
+    return hot_board_list_for_picker(limit=limit, exclude_cooldown=False)
+
+
+def hot_board_list_for_picker(
+    *,
+    limit: int = 100,
+    exclude_cooldown: bool = True,
+) -> List[Dict[str, Any]]:
     _ensure_schema()
     limit = max(1, min(int(limit), 200))
     now = _now_iso()
+    if exclude_cooldown:
+        pick_cooldown_purge_expired()
     with _DB_LOCK, _connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT * FROM hot_board
-            WHERE expires_at > ?
-            ORDER BY last_seen_at DESC
-            LIMIT ?
-            """,
-            (now, limit),
-        ).fetchall()
+        if exclude_cooldown:
+            rows = conn.execute(
+                """
+                SELECT h.* FROM hot_board h
+                WHERE h.expires_at > ?
+                  AND h.symbol NOT IN (
+                    SELECT symbol FROM pick_cooldown WHERE cooldown_until > ?
+                  )
+                ORDER BY h.last_seen_at DESC
+                LIMIT ?
+                """,
+                (now, now, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT * FROM hot_board
+                WHERE expires_at > ?
+                ORDER BY last_seen_at DESC
+                LIMIT ?
+                """,
+                (now, limit),
+            ).fetchall()
     return [_row_to_entry(row) for row in rows]
 
 
@@ -317,3 +359,117 @@ def build_hot_board_supplement(entry: Dict[str, Any]) -> Dict[str, Any]:
         "sources": entry.get("sources") or [],
         "alert_reason": entry.get("alert_reason") or "",
     }
+
+
+def pick_cooldown_purge_expired() -> int:
+    _ensure_schema()
+    now = _now_iso()
+    with _DB_LOCK, _connection() as conn:
+        cur = conn.execute("DELETE FROM pick_cooldown WHERE cooldown_until <= ?", (now,))
+        return cur.rowcount
+
+
+def pick_cooldown_set(symbols: List[str], *, hours: float = PICK_COOLDOWN_HOURS) -> int:
+    """对落选币写入冷却；已存在则取较晚的 cooldown_until。"""
+    _ensure_schema()
+    until = (datetime.now(_SH_TZ) + timedelta(hours=hours)).isoformat()
+    count = 0
+    with _DB_LOCK, _connection() as conn:
+        for raw in symbols:
+            sym = (raw or "").upper().strip()
+            if not sym:
+                continue
+            conn.execute(
+                """
+                INSERT INTO pick_cooldown (symbol, cooldown_until)
+                VALUES (?, ?)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    cooldown_until = CASE
+                        WHEN excluded.cooldown_until > pick_cooldown.cooldown_until
+                        THEN excluded.cooldown_until
+                        ELSE pick_cooldown.cooldown_until
+                    END
+                """,
+                (sym, until),
+            )
+            count += 1
+    return count
+
+
+def pick_slot_commit(
+    *,
+    symbol: str,
+    selection_context: Dict[str, Any],
+    candidate_symbols: List[str],
+    cooldown_hours: float = PICK_COOLDOWN_HOURS,
+) -> Dict[str, Any]:
+    """写入单槽待发帖币；对本批候选中未选中的币写入冷却。"""
+    _ensure_schema()
+    symbol = symbol.upper().strip()
+    candidates = list(dict.fromkeys(s.upper().strip() for s in candidate_symbols if (s or "").strip()))
+    if symbol not in candidates:
+        raise ValueError("symbol 必须属于 candidate_symbols")
+    if not symbol:
+        raise ValueError("symbol 不能为空")
+    now = _now_iso()
+    ctx_json = json.dumps(selection_context, ensure_ascii=False)
+    rejected = [s for s in candidates if s != symbol]
+    cooled = pick_cooldown_set(rejected, hours=cooldown_hours)
+    with _DB_LOCK, _connection() as conn:
+        conn.execute("DELETE FROM pick_slot WHERE id = 1")
+        conn.execute(
+            """
+            INSERT INTO pick_slot (id, symbol, selection_context, picked_at, status)
+            VALUES (1, ?, ?, ?, 'pending')
+            """,
+            (symbol, ctx_json, now),
+        )
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "cooldown_applied": rejected,
+        "cooldown_count": cooled,
+        "cooldown_hours": cooldown_hours,
+    }
+
+
+def _pick_slot_pending_expired(picked_at: str) -> bool:
+    try:
+        picked = datetime.fromisoformat(picked_at)
+    except ValueError:
+        return True
+    if picked.tzinfo is None:
+        picked = picked.replace(tzinfo=_SH_TZ)
+    deadline = picked + timedelta(hours=PICK_SLOT_PENDING_HOURS)
+    return datetime.now(_SH_TZ) >= deadline
+
+
+def pick_slot_get(*, consume: bool = False) -> Dict[str, Any]:
+    """读取待发帖槽位；consume=true 时认领并标记 consumed。"""
+    _ensure_schema()
+    with _DB_LOCK, _connection() as conn:
+        row = conn.execute("SELECT * FROM pick_slot WHERE id = 1").fetchone()
+        if row is None or row["status"] != "pending":
+            return {"status": "empty"}
+        if _pick_slot_pending_expired(row["picked_at"]):
+            conn.execute("DELETE FROM pick_slot WHERE id = 1")
+            return {"status": "empty", "reason": "expired"}
+        payload = {
+            "status": "pending",
+            "symbol": row["symbol"],
+            "selection_context": json.loads(row["selection_context"] or "{}"),
+            "picked_at": row["picked_at"],
+        }
+        if consume:
+            conn.execute(
+                "UPDATE pick_slot SET status = 'consumed' WHERE id = 1",
+            )
+            payload["consumed"] = True
+        return payload
+
+
+def pick_slot_clear() -> bool:
+    _ensure_schema()
+    with _DB_LOCK, _connection() as conn:
+        cur = conn.execute("DELETE FROM pick_slot WHERE id = 1")
+        return cur.rowcount > 0

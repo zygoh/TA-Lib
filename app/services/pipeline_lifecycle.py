@@ -11,7 +11,7 @@ from fastapi import FastAPI
 
 from app.services.futures_symbols import refresh_futures_symbols
 from app.services.merger_analyzer import merger_loop
-from app.services.symbol_pipeline_store import hot_board_purge_expired
+from app.services.symbol_pipeline_store import hot_board_purge_expired, pick_cooldown_purge_expired
 from app.services.telegram_listener import telegram_listener_loop
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,9 @@ async def _purge_loop(stop_event: asyncio.Event) -> None:
             removed = hot_board_purge_expired()
             if removed:
                 logger.info("hot board purged expired=%d", removed)
+            cooled = pick_cooldown_purge_expired()
+            if cooled:
+                logger.info("pick cooldown purged expired=%d", cooled)
         except Exception:
             logger.exception("hot board purge failed")
         try:

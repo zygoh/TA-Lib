@@ -33,15 +33,21 @@ from app.models.crypto_mcp_schemas import (
     HotBoardUpsertResponse,
     HotBoardEntry,
     PickerSnapshotResponse,
+    PickSlotCommitRequest,
+    PickSlotCommitResponse,
+    PickSlotResponse,
     FuturesSymbolsResponse,
 )
 from app.services.futures_symbols import list_trading_symbols, validate_symbol_for_hot_board
 from app.services.symbol_pipeline_store import (
+    PICK_COOLDOWN_HOURS,
     inbox_append,
     inbox_consume,
     inbox_delete,
     hot_board_upsert,
-    hot_board_list_active,
+    hot_board_list_for_picker,
+    pick_slot_commit,
+    pick_slot_get,
 )
 from app.services.crypto_mcp_service import (
     ensure_symbol_usdt,
@@ -149,11 +155,11 @@ async def hot_board_upsert_endpoint(body: HotBoardUpsertRequest):
 @router.get("/hot-board/picker-snapshot", response_model=PickerSnapshotResponse)
 async def hot_board_picker_snapshot(
     max_symbols: int = Query(10, ge=1, le=50),
-    include_bundle: bool = Query(True),
+    include_bundle: bool = Query(False),
 ):
-    """供 hot-board-pick（crypto-post-flow Stage 0）读取有效热榜（可选附带 bundle）。"""
+    """供 hot-board-pick 读取有效热榜；默认不含 bundle，并排除 2h 冷却中的 symbol。"""
     time_data = get_shanghai_time()
-    rows = hot_board_list_active(limit=max_symbols)
+    rows = hot_board_list_for_picker(limit=max_symbols, exclude_cooldown=True)
     entries: list[HotBoardEntry] = []
     for row in rows:
         bundle = await get_crypto_bundle(row["symbol"]) if include_bundle else None
@@ -161,9 +167,44 @@ async def hot_board_picker_snapshot(
         entries.append(HotBoardEntry(**item))
     return {
         "board_ttl_hours": 12,
+        "cooldown_hours": PICK_COOLDOWN_HOURS,
+        "cooldown_filtered": True,
         "as_of": time_data["full"],
         "entries": entries,
     }
+
+
+@router.get("/pick-slot", response_model=PickSlotResponse)
+async def pick_slot_read(consume: bool = Query(False)):
+    """crypto-post-flow Stage 0：读取待发帖槽位；consume=true 时认领（标记 consumed）。"""
+    data = pick_slot_get(consume=consume)
+    return PickSlotResponse(**data)
+
+
+@router.post("/pick-slot", response_model=PickSlotCommitResponse)
+async def pick_slot_write(body: PickSlotCommitRequest):
+    """hot-board-pick 提交选中币；对本批 candidate_symbols 中落选者写入 2h 冷却。"""
+    try:
+        symbol = await validate_symbol_for_hot_board(body.symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    candidates = [s.upper() for s in body.candidate_symbols]
+    if symbol not in candidates:
+        raise HTTPException(status_code=400, detail="symbol 必须属于 candidate_symbols")
+    try:
+        result = pick_slot_commit(
+            symbol=symbol,
+            selection_context=body.selection_context,
+            candidate_symbols=candidates,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return PickSlotCommitResponse(
+        ok=True,
+        symbol=result["symbol"],
+        cooldown_applied=result["cooldown_applied"],
+        cooldown_hours=result["cooldown_hours"],
+    )
 
 
 @router.get("/futures-symbols", response_model=FuturesSymbolsResponse)

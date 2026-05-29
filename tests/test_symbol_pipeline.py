@@ -12,9 +12,16 @@ from app.services import symbol_pipeline_store as store
 class SymbolPipelineStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
+        tmp_root = __import__("pathlib").Path(self._tmp.name)
+
+        def _tmp_db_path() -> __import__("pathlib").Path:
+            directory = tmp_root / "data" / "pipeline"
+            directory.mkdir(parents=True, exist_ok=True)
+            return directory / "pipeline.db"
+
         self._db_patch = patch(
-            "app.services.kline_chart_service._repo_root",
-            return_value=__import__("pathlib").Path(self._tmp.name),
+            "app.services.symbol_pipeline_store._db_path",
+            _tmp_db_path,
         )
         self._db_patch.start()
         store._SCHEMA_READY = False
@@ -74,6 +81,37 @@ class SymbolPipelineStoreTests(unittest.TestCase):
         self.assertEqual(entry["alert_reason"], "wizz cleaned text")
         sup = store.build_hot_board_supplement(entry)
         self.assertEqual(sup, {"sources": ["merger_analyzer", "wizz_alert"], "alert_reason": "wizz cleaned text"})
+
+    def test_pick_slot_and_cooldown(self) -> None:
+        for sym in ("AAAUSDT", "BBBUSDT", "CCCUSDT"):
+            store.hot_board_upsert({"symbol": sym, "source": "merger_analyzer"})
+        store.pick_slot_commit(
+            symbol="AAAUSDT",
+            selection_context={"source": "hot-board-pick", "symbol": "AAAUSDT"},
+            candidate_symbols=["AAAUSDT", "BBBUSDT", "CCCUSDT"],
+        )
+        pending = store.pick_slot_get(consume=False)
+        self.assertEqual(pending["status"], "pending")
+        self.assertEqual(pending["symbol"], "AAAUSDT")
+
+        picker_rows = store.hot_board_list_for_picker(limit=10)
+        picker_syms = {r["symbol"] for r in picker_rows}
+        self.assertIn("AAAUSDT", picker_syms)
+        self.assertNotIn("BBBUSDT", picker_syms)
+        self.assertNotIn("CCCUSDT", picker_syms)
+
+        claimed = store.pick_slot_get(consume=True)
+        self.assertTrue(claimed.get("consumed"))
+        empty = store.pick_slot_get(consume=False)
+        self.assertEqual(empty["status"], "empty")
+
+    def test_pick_slot_symbol_must_be_in_candidates(self) -> None:
+        with self.assertRaises(ValueError):
+            store.pick_slot_commit(
+                symbol="ZZZUSDT",
+                selection_context={"source": "hot-board-pick"},
+                candidate_symbols=["AAAUSDT"],
+            )
 
 
 if __name__ == "__main__":

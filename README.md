@@ -38,8 +38,10 @@
 - **`GET /crypto-mcp/all?symbol=...`** — 汇总时间与 bundle（若 symbol 在 12h 热榜，含 `bundle.hot_board_supplement`），并生成 K 线（**crypto-analyst 主调**）。
 - **`POST /crypto-mcp/subscription-inbox/seed`** — 仅开发用假数据；**生产验收** `uv run python scripts/test_pipeline_api.py`（默认 `https://do2ge.com/tail`，仅 §3 选币管线 GET；`--consume-inbox` 才测 POST consume）。
 - **`POST /crypto-mcp/subscription-inbox/consume`** — 取出 @wizzalert 待处理 raw 并**物理删除**（ingest skill）。
-- **`POST /crypto-mcp/hot-board/upsert`** — 清洗后写入热榜（ingest / Merger）。
-- **`GET /crypto-mcp/hot-board/picker-snapshot`** — 热榜 + 可选 bundle（picker skill）。
+- **`POST /crypto-mcp/hot-board/upsert`** — 热榜写入。ingest：`symbol` + `source=wizz_alert` + **`alert_reason`（必填）**；Merger：`source=merger_analyzer`（`merger` 仅库内评分，不返回 Agent）。
+- **`GET /crypto-mcp/hot-board/picker-snapshot`** — 热榜轻量候选（默认 `include_bundle=false`，排除 2h `pick_cooldown`）。`hot-board-pick` 常用 `max_symbols=10`。
+- **`POST /crypto-mcp/pick-slot`** — `hot-board-pick` 提交选中币 + `candidate_symbols`（落选写 2h 冷却）。
+- **`GET /crypto-mcp/pick-slot?consume=true`** — `crypto-post-flow` Stage 0 认领待发帖单槽。
 - **`GET /crypto-mcp/futures-symbols`** — 币安 U 本位 TRADING 合约列表（ingest 校验）。
 - **`POST /crypto-mcp/distribute`** — 表单提交 `symbol`、`text`、可选 `image` 文件，**统一向 Telegram、X、币安 Square 等渠道分发**（与 `zygo-skills` 里 `distribute-post` 能力对应）；支持可选 `x_reply_to_previous=true`（在 X 上用引用转帖方式引用上一条成功帖子）。
 
@@ -90,7 +92,7 @@ uvicorn app.app:app --host 0.0.0.0 --port 8000
 
 ## 数据与产物目录
 
-- **`data/`** — 运行期数据与可选本地文本产物（若仓库内仍有 `*_grok_prompt.md` 等历史文件可删除或保留备查，服务端不再读取）。  
+- **`data/`** — 运行期数据；选币管线 SQLite 默认 **`data/pipeline/pipeline.db`**（收件箱 + 热榜）。历史 `*_grok_prompt.md` 可删可留，服务端不再读取。  
 - **`image/`** — K 线等生成图片的落盘位置（`charts/image` 会按规则查找当日 PNG）。  
 
 ## 相关仓库

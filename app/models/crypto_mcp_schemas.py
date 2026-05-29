@@ -120,8 +120,39 @@ class HotBoardUpsertResponse(BaseModel):
 
 class PickerSnapshotResponse(BaseModel):
     board_ttl_hours: int = 12
+    cooldown_hours: float = Field(default=2.0, description="选币落选冷却时长（小时）")
+    cooldown_filtered: bool = Field(
+        default=True,
+        description="entries 已排除仍在冷却中的 symbol",
+    )
     as_of: str
     entries: List[HotBoardEntry]
+
+
+class PickSlotCommitRequest(BaseModel):
+    symbol: str
+    selection_context: Dict[str, Any]
+    candidate_symbols: List[str] = Field(
+        ...,
+        min_length=1,
+        description="本轮 picker-snapshot 返回的全部 symbol（用于计算落选冷却）",
+    )
+
+
+class PickSlotCommitResponse(BaseModel):
+    ok: bool = True
+    symbol: str
+    cooldown_applied: List[str] = Field(default_factory=list)
+    cooldown_hours: float = 2.0
+
+
+class PickSlotResponse(BaseModel):
+    status: str = Field(..., description="pending | empty")
+    symbol: Optional[str] = None
+    selection_context: Optional[Dict[str, Any]] = None
+    picked_at: Optional[str] = None
+    consumed: Optional[bool] = None
+    reason: Optional[str] = None
 
 
 class FuturesSymbolsResponse(BaseModel):

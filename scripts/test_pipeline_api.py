@@ -10,7 +10,8 @@
 
 验收接口（仅此四类，不测 /health、/gainers、seed、upsert）:
   - GET  /crypto-mcp/futures-symbols          （ingest 校验合约）
-  - GET  /crypto-mcp/hot-board/picker-snapshot?max_symbols=10&include_bundle=true  （hot-board-pick）
+  - GET  /crypto-mcp/hot-board/picker-snapshot?max_symbols=10&include_bundle=false （hot-board-pick）
+  - GET  /crypto-mcp/pick-slot                                              （crypto-post-flow Stage 0）
   - GET  /crypto-mcp/all?symbol=…             （crypto-analyst，验 hot_board_supplement）
   - POST /crypto-mcp/subscription-inbox/consume （仅 --consume-inbox；破坏性，默认跳过）
 
@@ -39,6 +40,7 @@ DEPRECATED_ENTRY_KEYS = ("wizz", "merged_for_sentiment", "merger")
 PIPELINE_GET_PATHS = (
     "/crypto-mcp/futures-symbols",
     "/crypto-mcp/hot-board/picker-snapshot",
+    "/crypto-mcp/pick-slot",
     "/crypto-mcp/all",
 )
 PIPELINE_POST_PATHS = ("/crypto-mcp/subscription-inbox/consume",)
@@ -161,7 +163,7 @@ def _validate_picker_snapshot_body(snap: Dict[str, Any], *, expect_count: int) -
     if len(entries) > expect_count:
         issues.append(f"entries 条数 {len(entries)} > max_symbols={expect_count}")
 
-    bundle_missing: List[str] = []
+    bundle_present: List[str] = []
     wizz_rows: List[Dict[str, Any]] = []
     for e in entries:
         sym = e.get("symbol") or "?"
@@ -169,8 +171,8 @@ def _validate_picker_snapshot_body(snap: Dict[str, Any], *, expect_count: int) -
         for bad in DEPRECATED_ENTRY_KEYS:
             if e.get(bad):
                 issues.append(f"{sym}: 不应返回已废弃字段 {bad}")
-        if not e.get("bundle"):
-            bundle_missing.append(sym)
+        if e.get("bundle"):
+            bundle_present.append(sym)
         if "wizz_alert" in (e.get("sources") or []):
             wizz_rows.append(_picker_entry_detail(e))
             if not (e.get("alert_reason") or "").strip():
@@ -180,12 +182,12 @@ def _validate_picker_snapshot_body(snap: Dict[str, Any], *, expect_count: int) -
         "as_of": snap.get("as_of"),
         "entry_count": len(entries),
         "symbols": [e.get("symbol") for e in entries],
-        "bundle_missing_on_entries": bundle_missing,
+        "bundle_present_on_entries": bundle_present,
         "wizz_alert_entry_count": len(wizz_rows),
         "wizz_alert_samples": wizz_rows[:2],
         "first_entry": _picker_entry_detail(entries[0]) if entries else None,
         "validation_issues": issues,
-        "params_used": {"max_symbols": expect_count, "include_bundle": True},
+        "params_used": {"max_symbols": expect_count, "include_bundle": False},
     }
 
 
@@ -214,7 +216,7 @@ def run_pipeline_checks(
     r = request_fn(
         "GET",
         "/crypto-mcp/hot-board/picker-snapshot",
-        params={"max_symbols": PICKER_MAX_SYMBOLS, "include_bundle": "true"},
+        params={"max_symbols": PICKER_MAX_SYMBOLS, "include_bundle": "false"},
     )
     snap = r.json() if r.status_code == 200 else {}
     entries = snap.get("entries") or []
@@ -223,13 +225,29 @@ def run_pipeline_checks(
         r.status_code == 200
         and len(entries) > 0
         and not validation["validation_issues"]
-        and not validation["bundle_missing_on_entries"]
+        and snap.get("cooldown_filtered") is True
     )
     results.append(
         _step(
             "GET /crypto-mcp/hot-board/picker-snapshot（hot-board-pick 契约）",
             picker_ok,
             {"http_status": r.status_code, **validation},
+        )
+    )
+
+    r_slot = request_fn("GET", "/crypto-mcp/pick-slot")
+    slot = r_slot.json() if r_slot.status_code == 200 else {}
+    slot_ok = r_slot.status_code == 200 and slot.get("status") in ("empty", "pending")
+    results.append(
+        _step(
+            "GET /crypto-mcp/pick-slot（crypto-post-flow Stage 0）",
+            slot_ok,
+            {
+                "http_status": r_slot.status_code,
+                "status": slot.get("status"),
+                "symbol": slot.get("symbol"),
+                "note": "pending 时 flow 可 consume=true 认领；empty 须先跑 hot-board-pick",
+            },
         )
     )
 
