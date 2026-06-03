@@ -25,7 +25,6 @@ try:
 except ImportError:
     print("提示: 未检测到 python-dotenv 库，将直接读取系统环境变量。建议安装: pip install python-dotenv")
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 def load_config():
@@ -76,7 +75,7 @@ class BinanceClient:
         api_key = os.getenv("BINANCE_API_KEY")
         api_secret = os.getenv("BINANCE_API_SECRET")
         if not api_key or not api_secret:
-            logger.warning("⚠️ 未检测到环境变量 BINANCE_API_KEY 或 BINANCE_API_SECRET")
+            logger.warning("未检测到环境变量 BINANCE_API_KEY 或 BINANCE_API_SECRET")
             logger.warning("请检查是否创建了 .env 文件，或是否正确配置了系统环境变量")
         return api_key, api_secret
     
@@ -136,7 +135,7 @@ class BinanceClient:
             raise Exception(f"API响应解析失败: {text}")
 
         if response.status != 200:
-            logger.error(f"Binance API Error {response.status}: {data}")
+            logger.error(f"币安 API 错误 HTTP {response.status}：{data}")
             raise Exception(f"Binance API Error: {data.get('msg', 'Unknown error')}")
         return data
     
@@ -669,7 +668,7 @@ async def process_trading_signals(signals: List[Dict[str, Any]]) -> Dict[str, An
         # 1. 优先处理 Wait/Hold (免检逻辑)
         if action in ["wait", "hold"]:
             reason = signal.get("reasoning", "No reasoning provided")
-            logger.info(f"Signal [WAIT/HOLD]: {symbol} - {reason}")
+            logger.info(f"交易信号 [观望/持有]：{symbol} — {reason}")
             results.append({
                 "symbol": symbol,
                 "action": action,

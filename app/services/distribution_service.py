@@ -36,6 +36,11 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _btc_last_post_id_path() -> Path:
+    """BTC X 引用链状态文件（硬编码路径，服务自动读写）。"""
+    return _repo_root() / "data" / "x_btc_last_post_id.txt"
+
+
 def _repo_env_path() -> Path:
     return _repo_root() / ".env"
 
@@ -85,7 +90,7 @@ def _upsert_repo_env(name: str, value: str) -> None:
 def _persist_oauth2_token(token: Dict[str, Any], reason: str) -> None:
     access_token = str(token.get("access_token") or "").strip()
     if not access_token:
-        logger.warning("skip persisting oauth2 token: missing access_token (reason=%s)", reason)
+        logger.warning("跳过持久化 OAuth2 令牌：缺少 access_token（原因=%s）", reason)
         return
 
     normalized: Dict[str, Any] = {
@@ -110,7 +115,7 @@ def _persist_oauth2_token(token: Dict[str, Any], reason: str) -> None:
 
     global _DOTENV_CACHE
     _DOTENV_CACHE = None
-    logger.info("persisted oauth2 token to .env and process env (reason=%s)", reason)
+    logger.info("OAuth2 令牌已写入 .env 与进程环境（原因=%s）", reason)
 
 
 def _read_env_with_source(name: str) -> Tuple[str, str]:
@@ -163,7 +168,7 @@ def _read_oauth2_user_token() -> Optional[Dict[str, Any]]:
             parsed = json.loads(raw)
             return parsed if isinstance(parsed, dict) else None
         except json.JSONDecodeError:
-            logger.warning("X_OAUTH2_TOKEN present but not valid JSON")
+            logger.warning("已配置 X_OAUTH2_TOKEN，但内容不是合法 JSON")
             return None
 
     access, _ = _read_env_with_source("X_OAUTH2_ACCESS_TOKEN")
@@ -176,9 +181,29 @@ def _read_oauth2_user_token() -> Optional[Dict[str, Any]]:
     return token
 
 
+def _is_btc_symbol(symbol_usdt: str) -> bool:
+    """Hard-coded: BTC / BTCUSDT posts use the BTC-only X quote chain."""
+    s = (symbol_usdt or "").strip().upper()
+    if not s:
+        return False
+    base = s[:-4] if s.endswith("USDT") else s
+    return base == "BTC"
+
+
 def _read_x_last_post_id() -> str:
     value, _ = _read_env_with_source("X_LAST_POST_ID")
     return value.strip()
+
+
+def _read_x_btc_last_post_id() -> str:
+    path = _btc_last_post_id_path()
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        logger.warning("读取 BTC 上一条推文 ID 失败 path=%s 错误=%s", path, exc)
+        return ""
 
 
 def _read_x_status_url_handle() -> str:
@@ -199,6 +224,18 @@ def _persist_x_last_post_id(post_id: str) -> None:
     _upsert_repo_env("X_LAST_POST_ID", clean_id)
     global _DOTENV_CACHE
     _DOTENV_CACHE = None
+
+
+def _persist_x_btc_last_post_id(post_id: str) -> None:
+    clean_id = (post_id or "").strip()
+    if not clean_id:
+        return
+    path = _btc_last_post_id_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(clean_id + "\n", encoding="utf-8")
+    except OSError as exc:
+        logger.warning("保存 BTC 上一条推文 ID 失败 path=%s 错误=%s", path, exc)
 
 
 def _x_status_permalink(tweet_id: str) -> str:
@@ -292,11 +329,13 @@ def _send_x_sync(
     image_filename: str | None,
     image_content_type: str | None,
     reply_to_previous: bool = False,
+    quote_tweet_id: str | None = None,
+    persist_btc_chain: bool = False,
 ) -> Dict[str, Any]:
     """Post to X using official xdk (OAuth 2.0 preferred; OAuth 1.0a fallback).
 
-    When reply_to_previous is True, the previous successful tweet id (X_LAST_POST_ID) is
-    sent as quote_tweet_id so X renders it as a quote post.
+    When reply_to_previous is True, quote_tweet_id (if not None) is used as quote_tweet_id;
+    otherwise X_LAST_POST_ID is read. BTC distribute flow passes the prior BTC id explicitly.
     """
     oauth2_token = _read_oauth2_user_token()
     client_id = _read_x_client_id()
@@ -327,7 +366,7 @@ def _send_x_sync(
             "X_ACCESS_TOKEN_SECRET",
         ]
     )
-    logger.info("x credential check: %s", x_credential_check)
+    logger.info("X 凭证检查：%s", x_credential_check)
 
     if not oauth2_ready and not oauth1_ready:
         return {
@@ -360,7 +399,7 @@ def _send_x_sync(
                 elif isinstance(client.token, dict):
                     _persist_oauth2_token(client.token, reason="refresh")
         except Exception as exc:  # noqa: BLE001
-            logger.warning("x oauth2 init/refresh failed, fallback=%s, err=%s", oauth1_ready, exc)
+            logger.warning("X OAuth2 初始化/刷新失败，回退 OAuth1=%s，错误=%s", oauth1_ready, exc)
             use_oauth2 = False
             if not oauth1_ready:
                 return {
@@ -388,7 +427,10 @@ def _send_x_sync(
     try:
         quoted_previous_id = ""
         if reply_to_previous:
-            quoted_previous_id = _read_x_last_post_id()
+            if quote_tweet_id is not None:
+                quoted_previous_id = (quote_tweet_id or "").strip()
+            else:
+                quoted_previous_id = _read_x_last_post_id()
 
         body_payload: Dict[str, Any] = {"text": text}
         if quoted_previous_id:
@@ -421,6 +463,8 @@ def _send_x_sync(
         if tweet_id:
             tweet_id_str = str(tweet_id)
             _persist_x_last_post_id(tweet_id_str)
+            if persist_btc_chain:
+                _persist_x_btc_last_post_id(tweet_id_str)
             result["id"] = tweet_id_str
             result["url"] = _x_status_permalink(str(tweet_id))
         if quoted_previous_id:
@@ -431,7 +475,12 @@ def _send_x_sync(
             result["reply_to_previous"] = True
             result["quote_previous"] = bool(quoted_previous_id)
             if not quoted_previous_id:
-                result["quote_previous_note"] = "X_LAST_POST_ID missing; posted without quote tweet"
+                if quote_tweet_id is not None:
+                    result["quote_previous_note"] = "no previous BTC post id; posted without quote tweet"
+                else:
+                    result["quote_previous_note"] = "X_LAST_POST_ID missing; posted without quote tweet"
+        if persist_btc_chain:
+            result["btc_quote_chain"] = True
         return result
 
     except (HTTPError, requests.RequestException, ValueError, RuntimeError) as exc:
@@ -527,6 +576,8 @@ async def _send_x(
     image_filename: str | None,
     image_content_type: str | None,
     reply_to_previous: bool = False,
+    quote_tweet_id: str | None = None,
+    persist_btc_chain: bool = False,
 ) -> Dict[str, Any]:
     """X API via xdk (blocking client runs in a thread pool)."""
     return await asyncio.to_thread(
@@ -536,6 +587,8 @@ async def _send_x(
         image_filename,
         image_content_type,
         reply_to_previous,
+        quote_tweet_id,
+        persist_btc_chain,
     )
 
 
@@ -736,7 +789,7 @@ async def _send_square(
                 data = payload.get("data") or {}
                 return _square_publish_result(data, mode=mode, raw_payload=payload)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("square channel failed: %s", exc)
+        logger.exception("Square 渠道发送失败：%s", exc)
         return {
             "sent": False,
             "mode": mode,
@@ -768,7 +821,16 @@ async def distribute_post(
         raise ValueError("text 不能为空")
 
     has_image = bool(image_bytes)
-    logger.info("distribute start symbol=%s text_len=%d has_image=%s", symbol_usdt, len(text), has_image)
+    is_btc = _is_btc_symbol(symbol_usdt)
+    x_reply = bool(x_reply_to_previous or is_btc)
+    btc_quote_id = _read_x_btc_last_post_id() if is_btc else None
+    logger.info(
+        "分发开始 symbol=%s 正文长度=%d 含图=%s BTC 引用链=%s",
+        symbol_usdt,
+        len(text),
+        has_image,
+        is_btc,
+    )
     telegram_result, x_result, square_result = await asyncio.gather(
         _send_telegram(text, image_bytes, image_filename, image_content_type),
         _send_x(
@@ -776,20 +838,22 @@ async def distribute_post(
             image_bytes,
             image_filename,
             image_content_type,
-            x_reply_to_previous,
+            x_reply,
+            quote_tweet_id=btc_quote_id if is_btc else None,
+            persist_btc_chain=is_btc,
         ),
         _send_square(text, image_bytes, image_filename, image_content_type),
         return_exceptions=True,
     )
 
     if isinstance(telegram_result, Exception):
-        logger.exception("telegram channel crashed: %s", telegram_result)
+        logger.exception("Telegram 渠道异常：%s", telegram_result)
         telegram_result = {"sent": False, "mode": "none", "note": f"telegram exception: {telegram_result}"}
     if isinstance(x_result, Exception):
-        logger.exception("x channel crashed: %s", x_result)
+        logger.exception("X 渠道异常：%s", x_result)
         x_result = {"sent": False, "mode": "none", "note": f"x exception: {x_result}"}
     if isinstance(square_result, Exception):
-        logger.exception("square channel crashed: %s", square_result)
+        logger.exception("Square 渠道异常：%s", square_result)
         square_result = {"sent": False, "mode": "none", "note": f"square exception: {square_result}"}
 
     telegram_sent = bool(telegram_result.get("sent"))
@@ -815,6 +879,7 @@ async def distribute_post(
     result = {
         "status": status,
         "symbol": symbol_usdt,
+        "x_btc_quote_chain": is_btc,
         "telegram_sent": telegram_sent,
         "x_sent": x_sent,
         "square_sent": square_sent,
@@ -826,7 +891,7 @@ async def distribute_post(
         "notes": notes,
     }
     logger.info(
-        "distribute status=%s symbol=%s tg=%s(%s) x=%s(%s) square=%s(%s)",
+        "分发结束 status=%s symbol=%s Telegram=%s(%s) X=%s(%s) Square=%s(%s)",
         status,
         symbol_usdt,
         telegram_sent,
@@ -837,5 +902,5 @@ async def distribute_post(
         square_result.get("mode"),
     )
     if notes:
-        logger.info("distribute notes symbol=%s notes=%s", symbol_usdt, notes)
+        logger.info("分发备注 symbol=%s 备注=%s", symbol_usdt, notes)
     return result

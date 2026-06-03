@@ -101,7 +101,7 @@ async def _fetch_klines_1h(session: aiohttp.ClientSession, symbol: str) -> Optio
             return None
         return df
     except Exception as e:
-        logger.debug("kline fetch failed symbol=%s: %s", symbol, e)
+        logger.debug("K 线拉取失败 symbol=%s：%s", symbol, e)
         return None
 
 
@@ -219,7 +219,7 @@ async def _fine_rank(candidates: List[Dict[str, Any]]) -> List[Tuple[Dict[str, A
             continue
         scored.append((ticker, vos_data))
         logger.debug(
-            "VOS %s score=%.1f atr=%.2f adx=%.1f bb=%.2f vol=%.2f rsi=%.1f",
+            "VOS 评分 %s score=%.1f atr=%.2f adx=%.1f bb=%.2f vol=%.2f rsi=%.1f",
             ticker["symbol"], vos_data["vos_score"],
             vos_data["atr_ratio"], vos_data["adx"],
             vos_data["bb_width_ratio"], vos_data["volume_ratio"],
@@ -238,13 +238,13 @@ async def run_merger_scan_once() -> int:
     await refresh_futures_symbols()
     trading = get_trading_symbols_sync()
     if not trading:
-        logger.warning("merger scan skipped: empty TRADING symbol cache")
+        logger.warning("Merger 扫描跳过：TRADING 合约缓存为空")
         return 0
 
     tickers = await _fetch_all_tickers()
     candidates = _coarse_filter(tickers, trading)
     if not candidates:
-        logger.info("merger scan: no coarse candidates (tickers=%d)", len(tickers))
+        logger.info("Merger 扫描：无粗筛候选（全市场 ticker 数=%d）", len(tickers))
         return 0
 
     ranked = await _fine_rank(candidates)
@@ -261,7 +261,7 @@ async def run_merger_scan_once() -> int:
         written += 1
 
     logger.info(
-        "merger scan done written=%d coarse=%d scored=%d",
+        "Merger 扫描完成 写入热榜=%d 粗筛候选=%d 精排=%d",
         written,
         len(candidates),
         len(ranked),
@@ -271,7 +271,7 @@ async def run_merger_scan_once() -> int:
 
 async def merger_loop(stop_event: asyncio.Event) -> None:
     logger.info(
-        "merger loop started interval_sec=%.0f top_n=%d coarse_abs_pct=%.0f coarse_pool=%d",
+        "Merger 循环已启动 间隔秒=%.0f 写入上限=%d 粗筛涨跌幅阈值=%.0f 粗筛池大小=%d",
         _SCAN_INTERVAL_SEC,
         _TOP_N,
         _COARSE_ABS_PCT,
@@ -281,9 +281,9 @@ async def merger_loop(stop_event: asyncio.Event) -> None:
         try:
             await run_merger_scan_once()
         except Exception:
-            logger.exception("merger scan failed")
+            logger.exception("Merger 扫描失败")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=_SCAN_INTERVAL_SEC)
         except asyncio.TimeoutError:
             pass
-    logger.info("merger loop stopped")
+    logger.info("Merger 循环已停止")

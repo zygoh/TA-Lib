@@ -30,14 +30,14 @@ async def telegram_listener_loop(stop_event: asyncio.Event) -> None:
     channel = _env("WIZZ_ALERT_CHANNEL", "wizzalert").lower()
 
     if not api_id or not api_hash:
-        logger.warning("telegram listener disabled: missing TG_LISTEN_API_ID or TG_LISTEN_API_HASH")
+        logger.warning("Telegram 监听未启用：缺少 TG_LISTEN_API_ID 或 TG_LISTEN_API_HASH")
         await stop_event.wait()
         return
 
     try:
         from telethon import TelegramClient, events
     except ImportError:
-        logger.error("telethon not installed; telegram listener disabled")
+        logger.error("未安装 telethon，Telegram 监听未启用")
         await stop_event.wait()
         return
 
@@ -51,20 +51,20 @@ async def telegram_listener_loop(stop_event: asyncio.Event) -> None:
                 return
             inbox_append(channel_username=channel, raw_text=text)
             logger.info(
-                "inbox append channel=%s message_id=%s len=%d",
+                "订阅收件箱写入 channel=%s message_id=%s 正文长度=%d",
                 channel,
                 int(event.message.id),
                 len(text),
             )
         except Exception:
-            logger.exception("telegram handler failed")
+            logger.exception("Telegram 消息处理失败")
 
     await client.start()
-    logger.info("telegram listener started channel=%s", channel)
+    logger.info("Telegram 监听已启动 channel=%s", channel)
 
     try:
         while not stop_event.is_set():
             await asyncio.sleep(1.0)
     finally:
         await client.disconnect()
-        logger.info("telegram listener disconnected")
+        logger.info("Telegram 监听已断开")

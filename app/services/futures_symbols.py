@@ -57,7 +57,7 @@ async def refresh_futures_symbols(force: bool = False) -> Set[str]:
 
         _TRADING_USDT = symbols
         _LAST_REFRESH = time.monotonic()
-        logger.info("futures symbol cache refreshed count=%d", len(symbols))
+        logger.info("U 本位合约列表缓存已刷新，数量=%d", len(symbols))
         return _TRADING_USDT
 
 

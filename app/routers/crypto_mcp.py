@@ -284,12 +284,12 @@ async def all_in_one(symbol: str):
     """
     t0 = time.perf_counter()
     target = ensure_symbol_usdt(symbol)
-    logger.info("all_in_one 开始 symbol=%s -> %s", symbol, target)
+    logger.info("行情汇总开始 symbol=%s -> %s", symbol, target)
 
     t_charts = time.perf_counter()
     await generate_kline_charts(target)
     logger.info(
-        "all_in_one K 线图生成完成 symbol=%s 耗时 %.2fs",
+        "行情汇总 K 线图生成完成 symbol=%s 耗时 %.2fs",
         target,
         time.perf_counter() - t_charts,
     )
@@ -299,13 +299,13 @@ async def all_in_one(symbol: str):
     t_bundle = time.perf_counter()
     bundle_data = await get_crypto_bundle(target)
     logger.info(
-        "all_in_one bundle 聚合完成 symbol=%s 耗时 %.2fs",
+        "行情汇总 bundle 聚合完成 symbol=%s 耗时 %.2fs",
         target,
         time.perf_counter() - t_bundle,
     )
 
     logger.info(
-        "all_in_one 结束 symbol=%s 总耗时 %.2fs",
+        "行情汇总结束 symbol=%s 总耗时 %.2fs",
         target,
         time.perf_counter() - t0,
     )
@@ -323,7 +323,7 @@ async def distribute(
     image: UploadFile | None = File(None, description="可选图片文件，支持常见 image/* 类型"),
     x_reply_to_previous: bool = Form(
         False,
-        description="可选：发往 X 时用引用转帖方式引用上一次成功发送的帖子（读 X_LAST_POST_ID）。",
+        description="可选：非 BTC 时发往 X 引用上一条成功帖（X_LAST_POST_ID）。BTC/BTCUSDT 服务端自动引用上一条 BTC 帖，无需传 true。",
     ),
 ):
     """
@@ -357,7 +357,7 @@ async def distribute(
         x_reply_to_previous=x_reply_to_previous,
     )
     logger.info(
-        "distribute api symbol=%s status=%s has_image=%s tg=%s x=%s square=%s",
+        "分发接口 symbol=%s status=%s 含图=%s Telegram=%s X=%s Square=%s",
         target,
         result.get("status"),
         bool(image_bytes),

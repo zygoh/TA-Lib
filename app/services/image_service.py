@@ -1,8 +1,12 @@
 from PIL import Image, ImageDraw, ImageFont
 import io
+import logging
 import os
 import re
 from typing import Tuple, Dict, List
+
+logger = logging.getLogger(__name__)
+
 
 class ImageGeneratorService:
     def __init__(self):
@@ -12,11 +16,10 @@ class ImageGeneratorService:
         
         # 检查字体文件是否存在
         if not os.path.exists(self.font_path):
-            print(f"未找到字体文件: {self.font_path}")
-            # 使用默认字体作为备用
+            logger.warning("未找到字体文件：%s，将使用系统默认字体", self.font_path)
             self.font_path = None
         else:
-            print(f"使用字体: {self.font_path}")
+            logger.info("图片服务使用字体：%s", self.font_path)
     
     def _hex_to_rgb(self, hex_color: str) -> Tuple[int, int, int]:
         """将十六进制颜色转换为RGB元组"""

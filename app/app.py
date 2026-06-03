@@ -10,18 +10,12 @@ from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw
 
+from app.logging_config import setup_logging
 from app.models.schemas import HealthResponse
 from app.routers import indicators, images, trading, crypto_mcp, oauth_x
 from app.services.pipeline_lifecycle import pipeline_lifespan
 
-# 配置日志 - 只输出到控制台
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
+setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager

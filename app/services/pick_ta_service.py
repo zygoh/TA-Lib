@@ -118,7 +118,7 @@ async def fetch_pick_ta_map(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
                 bundle = await get_crypto_bundle_for_pick(sym)
                 return sym, build_pick_ta_summary(bundle)
             except Exception as exc:
-                logger.warning("pick_ta failed symbol=%s err=%s", sym, exc)
+                logger.warning("选币技术面计算失败 symbol=%s 错误=%s", sym, exc)
                 return sym, {"ta_available": False, "error": str(exc)}
 
     pairs = await asyncio.gather(*[_one(s) for s in symbols])

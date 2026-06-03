@@ -43,7 +43,7 @@
 - **`POST /crypto-mcp/pick-slot`** — `hot-board-pick` 提交选中币 + `candidate_symbols`（落选写 2h 冷却）。
 - **`GET /crypto-mcp/pick-slot?consume=true`** — `crypto-post-flow` Stage 0 认领待发帖单槽。
 - **`GET /crypto-mcp/futures-symbols`** — 币安 U 本位 TRADING 合约列表（ingest 校验）。
-- **`POST /crypto-mcp/distribute`** — 表单提交 `symbol`、`text`、可选 `image` 文件，**统一向 Telegram、X、币安 Square 等渠道分发**（与 `zygo-skills` 里 `distribute-post` 能力对应）；支持可选 `x_reply_to_previous=true`（在 X 上用引用转帖方式引用上一条成功帖子）。
+- **`POST /crypto-mcp/distribute`** — 表单提交 `symbol`、`text`、可选 `image` 文件，**统一向 Telegram、X、币安 Square 等渠道分发**（与 `zygo-skills` 里 `distribute-post` 能力对应）。**BTC**（`BTC` / `BTCUSDT`）在 X 渠道会**自动**引用上一条 BTC 帖（服务端 `data/x_btc_last_post_id.txt` 自动读写，无需配置）；其它币可选 `x_reply_to_previous=true`（读 `X_LAST_POST_ID`）。
 
   **Binance Square 行为**（对齐 [Binance square-post skill](https://github.com/binance/binance-skills-hub/tree/main/skills/binance/square-post)）：
   - 有 `image`：先走 OpenAPI 预签名上传 → 轮询处理 → 以 `contentType=1` + `imageList` 发图文短帖（本接口当前传 **1 张**）。
@@ -69,7 +69,7 @@
 **分发（`distribution_service`）**  
 - Telegram：`TG_BOT_TOKEN`、`TG_CHAT_ID` 等（与上部分可复用，语义以发送渠道为准）。  
 - X / OAuth2：`X_CLIENT_ID`、`X_CLIENT_SECRET`、`X_REDIRECT_URI`、`X_OAUTH2_TOKEN` 或 `X_OAUTH2_ACCESS_TOKEN` / `X_OAUTH2_REFRESH_TOKEN`；以及 OAuth1 媒体上传相关 `X_CONSUMER_KEY`、`X_CONSUMER_SECRET`、`X_ACCESS_TOKEN`、`X_ACCESS_TOKEN_SECRET` 等。  
-- X 引用转帖：`X_LAST_POST_ID`（服务会在每次 X 发帖成功后自动更新，可配合 `x_reply_to_previous=true` 使用）。  
+- X 引用转帖：`X_LAST_POST_ID`（非 BTC 且 `x_reply_to_previous=true` 时读取；每次 X 发帖成功后更新）。**BTC 专用链**：无 env，由服务写入 `data/x_btc_last_post_id.txt`（仅 BTC/BTCUSDT 发帖时更新，与 ETH 等互不影响）。  
 - 币安广场：`SQUARE_OPENAPI_KEY` 或 `BINANCE_SQUARE_OPENAPI_KEY`（Square OpenAPI；与 [square-post skill](https://github.com/binance/binance-skills-hub/tree/main/skills/binance/square-post) 一致）。
 - 其他：`X_OAUTH1_CALLBACK` 等见代码。
 

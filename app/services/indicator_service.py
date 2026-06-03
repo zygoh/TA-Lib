@@ -19,8 +19,6 @@ import pandas as pd
 import talib
 from aiohttp.client_exceptions import ClientResponseError
 
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # 加载配置文件
@@ -599,7 +597,9 @@ class BinanceClient:
             if current_end_time:
                 # 如果 endTime 已经超过1个月限制，停止分页
                 if current_end_time < earliest_allowed_time:
-                    logger.warning(f"OI数据请求已超过1个月限制，停止分页。当前endTime: {current_end_time}, 最早允许: {earliest_allowed_time}")
+                    logger.warning(
+                        f"OI 请求已超过 1 个月上限，停止分页；当前 endTime={current_end_time}，最早允许={earliest_allowed_time}"
+                    )
                     break
                 params['endTime'] = current_end_time
 
@@ -620,10 +620,12 @@ class BinanceClient:
                             limit_index = request_limits.index(request_limit)
                             if limit_index < len(request_limits) - 1:
                                 request_limit = request_limits[limit_index + 1]
-                                logger.warning(f"获取OI失败，尝试更小的limit: {request_limit}, 错误: {error_msg}")
+                                logger.warning(f"获取 OI 失败，尝试更小 limit={request_limit}，错误：{error_msg}")
                                 continue
                         
-                        logger.warning(f"获取OI分页失败: {response.status}, message='{error_msg}', url='{url}?{urlencode(params)}'")
+                        logger.warning(
+                            f"获取 OI 分页失败：HTTP {response.status}，message={error_msg!r}，url={url}?{urlencode(params)}"
+                        )
                         # 如果已经有数据，返回已有数据；否则返回空
                         break
                     
@@ -631,7 +633,7 @@ class BinanceClient:
                     
                     # 检查返回的数据格式
                     if not isinstance(data, list):
-                        logger.warning(f"获取OI返回数据格式异常: {type(data)}")
+                        logger.warning(f"获取 OI 返回数据格式异常：{type(data)}")
                         break
 
                     if not data:
@@ -642,7 +644,7 @@ class BinanceClient:
 
                     # 检查数据是否有timestamp字段
                     if not data or 'timestamp' not in data[0]:
-                        logger.warning(f"获取OI数据缺少timestamp字段")
+                        logger.warning("获取 OI 数据缺少 timestamp 字段")
                         break
                     
                     # 获取最早的时间戳（数据是倒序的，最后一个是最早的）
@@ -650,14 +652,14 @@ class BinanceClient:
                     
                     # 如果最早的时间戳已经超过1个月限制，停止分页
                     if last_timestamp < earliest_allowed_time:
-                        logger.info(f"OI数据已到达1个月限制，停止分页")
+                        logger.info("OI 数据已到达 1 个月上限，停止分页")
                         break
                     
                     # 使用最早的时间戳减1作为下次请求的endTime
                     current_end_time = last_timestamp - 1
 
             except Exception as e:
-                logger.warning(f"获取OI分页失败: {e}")
+                logger.warning(f"获取 OI 分页异常：{e}")
                 # 如果已经有数据，继续处理；否则返回空
                 if not all_data:
                     break
@@ -686,7 +688,7 @@ class BinanceClient:
 
             return df[['timestamp', 'sumOpenInterestValue']]
         except Exception as e:
-            logger.warning(f"处理OI数据失败: {e}")
+            logger.warning(f"处理 OI 数据失败：{e}")
             return pd.DataFrame()
 
     async def get_funding_rate_history(self, symbol: str, limit: int = 100) -> pd.DataFrame:
@@ -769,9 +771,9 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
             result_df['close_ts'] = result_df['temp_ts'] + interval_delta
             # 确保时间精度一致（转换为毫秒精度，与OI数据匹配）
             result_df['close_ts'] = result_df['close_ts'].astype('datetime64[ms]')
-            logger.debug(f"✅ 计算Close Time成功: interval={interval}, delta={interval_delta}")
+            logger.debug(f"收盘时间计算成功：周期={interval}，delta={interval_delta}")
         except ValueError as e:
-            logger.error(f"❌ 时间间隔转换失败: {e}")
+            logger.error(f"时间间隔转换失败：{e}")
             raise
 
         if not oi_df.empty:
@@ -873,9 +875,9 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
         expected_length = len(result_df)
         try:
             validate_output_data_alignment(final_data, expected_length)
-            logger.debug(f"✅ 数据对齐验证通过: {len(final_data)}列, 每列{expected_length}行")
+            logger.debug(f"数据对齐验证通过：{len(final_data)} 列，每列 {expected_length} 行")
         except ValueError as e:
-            logger.error(f"❌ 数据对齐验证失败: {e}")
+            logger.error(f"数据对齐验证失败：{e}")
             raise
 
         # --- [关键修复3] 计算OI数据有效性信息 ---
@@ -887,14 +889,14 @@ async def calculate_indicators(symbol: str, interval: str, config: Dict) -> Dict
             # 如果覆盖率 < 50%，记录警告
             if oi_data_info['oi_coverage_percent'] < 50:
                 logger.warning(
-                    f"⚠️ OI数据覆盖率较低: {oi_data_info['oi_coverage_percent']:.1f}% "
-                    f"({oi_data_info['oi_valid_bars']}/{oi_data_info['total_bars']}条有效) "
-                    f"- {symbol} {interval}"
+                    f"OI 数据覆盖率偏低：{oi_data_info['oi_coverage_percent']:.1f}% "
+                    f"（{oi_data_info['oi_valid_bars']}/{oi_data_info['total_bars']} 条有效）"
+                    f" — {symbol} {interval}"
                 )
             else:
                 logger.debug(
-                    f"✅ OI数据覆盖率: {oi_data_info['oi_coverage_percent']:.1f}% "
-                    f"({oi_data_info['oi_valid_bars']}/{oi_data_info['total_bars']}条有效)"
+                    f"OI 数据覆盖率：{oi_data_info['oi_coverage_percent']:.1f}% "
+                    f"（{oi_data_info['oi_valid_bars']}/{oi_data_info['total_bars']} 条有效）"
                 )
 
         result = {'indicators': final_data}

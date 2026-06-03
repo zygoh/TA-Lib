@@ -58,6 +58,14 @@ def _run_send_x_with_previous_id(previous_id: str):
     return result, FakeXdkClient.last_instance.created_body
 
 
+class BtcSymbolTests(unittest.TestCase):
+    def test_is_btc_symbol(self):
+        self.assertTrue(ds._is_btc_symbol("BTCUSDT"))
+        self.assertTrue(ds._is_btc_symbol("BTC"))
+        self.assertFalse(ds._is_btc_symbol("ETHUSDT"))
+        self.assertFalse(ds._is_btc_symbol("WBTCUSDT"))
+
+
 class XQuotePreviousTests(unittest.TestCase):
     def test_x_quote_previous_uses_quote_tweet_id_without_appended_link(self):
         result, body = _run_send_x_with_previous_id("123")
@@ -77,6 +85,38 @@ class XQuotePreviousTests(unittest.TestCase):
         self.assertNotIn("quote_tweet_id", payload)
         self.assertIs(result["quote_previous"], False)
         self.assertIn("without quote tweet", result["quote_previous_note"])
+
+    def test_x_btc_chain_uses_explicit_quote_id(self):
+        FakeXdkClient.last_instance = None
+        patches = [
+            patch.object(ds, "XdkClient", FakeXdkClient),
+            patch.object(ds, "_read_oauth2_user_token", return_value={"access_token": "token"}),
+            patch.object(ds, "_read_x_client_id", return_value="client-id"),
+            patch.object(ds, "_read_x_client_secret", return_value="client-secret"),
+            patch.object(ds, "_read_x_redirect_uri", return_value="https://example.com/callback"),
+            patch.object(ds, "_read_env_with_source", return_value=("", "missing")),
+            patch.object(ds, "_credential_snapshot", return_value={}),
+            patch.object(ds, "_read_x_last_post_id", return_value="should-not-use"),
+            patch.object(ds, "_persist_x_last_post_id"),
+            patch.object(ds, "_x_status_permalink", side_effect=lambda tid: f"https://x.com/i/status/{tid}"),
+        ]
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            persist_btc = stack.enter_context(patch.object(ds, "_persist_x_btc_last_post_id"))
+            result = ds._send_x_sync(
+                "btc update",
+                image_bytes=None,
+                image_filename=None,
+                image_content_type=None,
+                reply_to_previous=True,
+                quote_tweet_id="btc-prev-99",
+                persist_btc_chain=True,
+            )
+        body = FakeXdkClient.last_instance.created_body.model_dump(exclude_none=True)
+        self.assertEqual(body["quote_tweet_id"], "btc-prev-99")
+        persist_btc.assert_called_once_with("456")
+        self.assertIs(result.get("btc_quote_chain"), True)
 
 
 class SquareSendTests(unittest.IsolatedAsyncioTestCase):

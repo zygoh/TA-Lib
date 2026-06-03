@@ -145,7 +145,7 @@ async def x_oauth2_start() -> RedirectResponse:
     if not auth.code_verifier:
         raise HTTPException(status_code=500, detail="PKCE 未生成 code_verifier")
     _pkce_store[state] = (auth.code_verifier, time.time() + _PKCE_TTL_SEC)
-    logger.info("x oauth2 start: redirecting to X authorize (state len=%d)", len(state))
+    logger.info("X OAuth2 授权开始，跳转至 X 授权页（state 长度=%d）", len(state))
     return RedirectResponse(url, status_code=302)
 
 
@@ -174,7 +174,7 @@ async def x_oauth2_callback(
 
     client_id, client_secret, redirect_uri = _oauth_config_or_503()
     logger.info(
-        "x oauth2 callback: exchanging code (client_id len=%s, secret len=%s, redirect len=%s)",
+        "X OAuth2 回调：正在用 code 换 token（client_id 长度=%s，secret 长度=%s，redirect 长度=%s）",
         len(client_id),
         len(client_secret),
         len(redirect_uri),
@@ -188,13 +188,13 @@ async def x_oauth2_callback(
             code_verifier=code_verifier,
         )
     except ValueError as exc:
-        logger.warning("x oauth2 token exchange failed: %s", exc)
+        logger.warning("X OAuth2 换 token 失败：%s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     token_json = json.dumps(token, ensure_ascii=False, separators=(",", ":"))
     safe_json = html.escape(token_json)
     distribution_service._persist_oauth2_token(token, reason="oauth2_callback")  # noqa: SLF001
-    logger.info("x oauth2 callback: token exchange ok")
+    logger.info("X OAuth2 回调：换 token 成功")
 
     body = f"""<!DOCTYPE html>
 <html lang="zh-CN">
