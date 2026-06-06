@@ -19,7 +19,7 @@
 
 ## 与 zygo-skills 的关系
 
-- **`zygo-skills`** 仓库中 **`skills/crypto-post-flow/SKILL.md`** 是 **日更内容编排的单一事实来源**（选币认领 → 初稿 → 卦象加持 → Stage 2.0 前置约束 → 并行压缩/配图（图片最多 4 次重试）→ **Stage 2.5 发布前校验** → 带图分发 → 更新仓库 `MEMORIES.md`）；推荐在 **Cursor Cloud Automation** 中运行；本服务不再内置自动调用 Cursor Cloud Agent API 的定时器。Stage 4 只更新、提交、推送 `zygo-skills/skills/crypto-post-flow/MEMORIES.md`，用于记录最近图片风格并让 Stage 2.0 避开风格惯性。`distribute-post` 仅接收 flow 校验后的 `validated_final_text` + **必填** `validated_image_path`（flow 禁止无图分发），对应本服务 **`POST /crypto-mcp/distribute`**（`image` 表单字段必传）。
+- **`zygo-skills`** 仓库中 **`skills/crypto/crypto-post-flow/SKILL.md`** 是 **日更内容编排的单一事实来源**（选币认领 → 初稿 → 卦象加持 → Stage 2.0 前置约束 → 并行压缩/配图（图片最多 4 次重试）→ **Stage 2.5 发布前校验** → 带图分发 → 更新仓库 `MEMORIES.md`）；推荐在 **Cursor Cloud Automation** 中运行；本服务不再内置自动调用 Cursor Cloud Agent API 的定时器。Stage 4 只更新、提交、推送 `zygo-skills/skills/crypto/crypto-post-flow/MEMORIES.md`，用于记录最近图片风格并让 Stage 2.0 避开风格惯性。`distribute-post` 仅接收 flow 校验后的 `validated_final_text` + **必填** `validated_image_path`（flow 禁止无图分发），对应本服务 **`POST /crypto-mcp/distribute`**（`image` 表单字段必传）。
 - 子技能里的 **crypto-analyst** 会调用本服务的 `GET /crypto-mcp/all`、以及 K 线图的直链等（具体 Base URL 以子技能内文档为准，例如可部署在 `https://.../tail` 后挂载）。
 
 因此：部署时通常把 **本仓库** 与 **父级工作区**（含 `zygo-skills`）**指向同一套远端仓库/分支**，以便 Agent 侧技能与本服务的 `crypto-mcp` / `maternal-mcp` 接口协同。
