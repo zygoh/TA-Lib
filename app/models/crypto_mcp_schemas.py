@@ -185,3 +185,9 @@ class DistributeResponse(BaseModel):
     channels: Dict[str, Any]
     notes: List[str]
 
+
+class MaternalDistributeResponse(BaseModel):
+    status: str = Field(..., description="success / failed")
+    telegram_sent: bool
+    notes: List[str] = Field(default_factory=list)
+

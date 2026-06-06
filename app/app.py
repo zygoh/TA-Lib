@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw
 
 from app.logging_config import setup_logging
 from app.models.schemas import HealthResponse
-from app.routers import indicators, images, trading, crypto_mcp, oauth_x
+from app.routers import indicators, images, trading, crypto_mcp, maternal_mcp, oauth_x
 from app.services.pipeline_lifecycle import pipeline_lifespan
 
 setup_logging(logging.INFO)
@@ -48,6 +48,7 @@ app.include_router(indicators.router)
 app.include_router(images.router)
 app.include_router(trading.router)
 app.include_router(crypto_mcp.router)
+app.include_router(maternal_mcp.router)
 
 # X OAuth2：同时挂载根路径与 /tail，适配反代（如 https://do2ge.com/tail → 本服务）
 app.include_router(oauth_x.router)

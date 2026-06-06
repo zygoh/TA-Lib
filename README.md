@@ -22,7 +22,7 @@
 - **`zygo-skills`** 仓库中 **`skills/crypto-post-flow/SKILL.md`** 是 **日更内容编排的单一事实来源**（选币认领 → 初稿 → 卦象加持 → Stage 2.0 前置约束 → 并行压缩/配图（图片最多 4 次重试）→ **Stage 2.5 发布前校验** → 带图分发 → 更新仓库 `MEMORIES.md`）；推荐在 **Cursor Cloud Automation** 中运行；本服务不再内置自动调用 Cursor Cloud Agent API 的定时器。Stage 4 只更新、提交、推送 `zygo-skills/skills/crypto-post-flow/MEMORIES.md`，用于记录最近图片风格并让 Stage 2.0 避开风格惯性。`distribute-post` 仅接收 flow 校验后的 `validated_final_text` + **必填** `validated_image_path`（flow 禁止无图分发），对应本服务 **`POST /crypto-mcp/distribute`**（`image` 表单字段必传）。
 - 子技能里的 **crypto-analyst** 会调用本服务的 `GET /crypto-mcp/all`、以及 K 线图的直链等（具体 Base URL 以子技能内文档为准，例如可部署在 `https://.../tail` 后挂载）。
 
-因此：部署时通常把 **本仓库** 与 **父级工作区**（含 `zygo-skills`）**指向同一套远端仓库/分支**，以便 Agent 侧技能与本服务的 `crypto-mcp` 接口协同。
+因此：部署时通常把 **本仓库** 与 **父级工作区**（含 `zygo-skills`）**指向同一套远端仓库/分支**，以便 Agent 侧技能与本服务的 `crypto-mcp` / `maternal-mcp` 接口协同。
 
 ## 重要端点（crypto-mcp 前缀为 `/crypto-mcp`）
 
@@ -44,6 +44,10 @@
 - **`GET /crypto-mcp/pick-slot?consume=true`** — `crypto-post-flow` Stage 0 认领待发帖单槽。
 - **`GET /crypto-mcp/futures-symbols`** — 币安 U 本位 TRADING 合约列表（ingest 校验）。
 - **`POST /crypto-mcp/distribute`** — 表单提交 `symbol`、`text`、`image`（HTTP 层可选；**`crypto-post-flow` 经 `distribute-post` 调用时必传**），**统一向 Telegram、X、币安 Square 等渠道分发**。**BTC**（`BTC` / `BTCUSDT`）在 X 渠道会**自动**引用上一条 BTC 帖（服务端 `data/x_btc_last_post_id.txt` 自动读写，无需配置）；其它币可选 `x_reply_to_previous=true`（读 `X_LAST_POST_ID`）。
+
+**maternal-mcp 前缀为 `/maternal-mcp`**（母婴科普 flow 专用，只发 Telegram）：
+
+- **`POST /maternal-mcp/distribute`** — 表单提交 `title`、`digest`（可选）、`text`、`image`（**必填**）。服务端顺序：① `sendPhoto`（封面 + title/digest 说明）→ ② `sendMessage`（完整正稿）。**只走 Telegram**，不碰 X / Square / 公众号。凭据读 `.env` 的 `TG_BOT_TOKEN` / `TG_CHAT_ID`（与上表分发节相同）。对应 **`zygo-skills`** 的 `maternal-post-flow` → `maternal-distribute`。
 
   **Binance Square 行为**（对齐 [Binance square-post skill](https://github.com/binance/binance-skills-hub/tree/main/skills/binance/square-post)）：
   - 有 `image`：先走 OpenAPI 预签名上传 → 轮询处理 → 以 `contentType=1` + `imageList` 发图文短帖（`crypto-post-flow` 固定传 **1 张**）。
