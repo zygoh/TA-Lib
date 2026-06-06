@@ -12,6 +12,13 @@ fi
 echo "🛑 停止现有容器..."
 docker-compose down
 
+# 拉取最新代码
+echo "📥 拉取最新代码..."
+if ! git pull; then
+    echo "❌ git pull 失败，已中止部署"
+    exit 1
+fi
+
 # 清理旧镜像（可选）
 echo "🧹 清理旧镜像..."
 docker system prune -f
