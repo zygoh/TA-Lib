@@ -12,12 +12,14 @@ fi
 echo "🛑 停止现有容器..."
 docker-compose down
 
-# 拉取最新代码
+# 拉取最新代码（部署机以远端为准，丢弃本地未提交改动，避免 pull 被 deploy.sh 等脏文件挡住）
 echo "📥 拉取最新代码..."
-if ! git pull; then
-    echo "❌ git pull 失败，已中止部署"
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if ! git fetch origin "$BRANCH"; then
+    echo "❌ git fetch 失败，已中止部署"
     exit 1
 fi
+git reset --hard "origin/$BRANCH"
 
 # 清理旧镜像（可选）
 echo "🧹 清理旧镜像..."
