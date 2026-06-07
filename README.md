@@ -19,10 +19,12 @@
 
 ## 与 zygo-skills 的关系
 
-- **`zygo-skills`** 仓库中 **`skills/crypto/crypto-post-flow/SKILL.md`** 是 **日更内容编排的单一事实来源**（选币认领 → 初稿 → 卦象加持 → Stage 2.0 前置约束 → 并行压缩/配图（图片最多 4 次重试）→ **Stage 2.5 发布前校验** → 带图分发 → 更新仓库 `MEMORIES.md`）；推荐在 **Cursor Cloud Automation** 中运行；本服务不再内置自动调用 Cursor Cloud Agent API 的定时器。Stage 4 只更新、提交、推送 `zygo-skills/skills/crypto/crypto-post-flow/MEMORIES.md`，用于记录最近图片风格并让 Stage 2.0 避开风格惯性。`distribute-post` 仅接收 flow 校验后的 `validated_final_text` + **必填** `validated_image_path`（flow 禁止无图分发），对应本服务 **`POST /crypto-mcp/distribute`**（`image` 表单字段必传）。
-- 子技能里的 **crypto-analyst** 会调用本服务的 `GET /crypto-mcp/all`、以及 K 线图的直链等（具体 Base URL 以子技能内文档为准，例如可部署在 `https://.../tail` 后挂载）。
+- **币圈日更**：`zygo-skills/skills/crypto/crypto-post-flow/SKILL.md` 是编排真源（选币认领 → 初稿 → 卦象加持 → Stage 2.0 → 并行压缩/配图（≤4 次重试）→ Stage 2.5 → 带图分发 → 更新 `MEMORIES.md`）。`distribute-post` 对应 **`POST /crypto-mcp/distribute`**（`image` 必传；TG + X + Square）。Stage 4 仅提交 `skills/crypto/crypto-post-flow/MEMORIES.md`（图片风格记忆）。
+- **母婴科普**：`zygo-skills/skills/maternal-post-flow/SKILL.md` 是编排真源（选题 → 权威取证 → 合规前置 → 并行清洗/配图 → Stage 2.5 双重校验 → **只发 TG** → 更新 `MEMORIES.md`）。`maternal-distribute` 对应 **`POST /maternal-mcp/distribute`**（`title` + `text` + `image` 必传；`digest` 可选）。Stage 4 仅提交 `skills/maternal-post-flow/MEMORIES.md`（选题 + 配图风格）。
+- **crypto-analyst** 调用 `GET /crypto-mcp/all` 及 K 线图直链等（Base URL 以子技能为准，生产示例 `https://do2ge.com/tail`）。
+- 推荐在 **Cursor Cloud Automation** 中运行各 flow；本服务**不再**内置 Cursor Agent 定时器。
 
-因此：部署时通常把 **本仓库** 与 **父级工作区**（含 `zygo-skills`）**指向同一套远端仓库/分支**，以便 Agent 侧技能与本服务的 `crypto-mcp` / `maternal-mcp` 接口协同。
+部署时通常把 **本仓库** 与 **zygo-skills** 指向可用的远端分支，以便 Agent 技能与本服务 `crypto-mcp` / `maternal-mcp` 协同。人类可读设计见工作区 `docs/DESIGN-symbol-selection-pipeline.md`、`docs/DESIGN-flow-image.md`、`docs/DESIGN-maternal-post-flow.md`。
 
 ## 重要端点（crypto-mcp 前缀为 `/crypto-mcp`）
 
@@ -101,6 +103,6 @@ uvicorn app.app:app --host 0.0.0.0 --port 8000
 
 ## 相关仓库
 
-- **zygo-skills**：日更 **crypto-post-flow**（含 `flow-image` 等子技能），与本服务 **`crypto-mcp` 接口** 配套。
+- **zygo-skills**：**crypto-post-flow**（`crypto-mcp`）与 **maternal-post-flow**（`maternal-mcp`）编排契约；配图均为横版 4:3 原生 `GenerateImage` 1536×1024，不裁切。
 
 若你需要「最小可跑清单」，请至少配置：**服务监听、币安只读或业务所需 key、分发文案渠道对应的 token。**
