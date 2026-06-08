@@ -19,12 +19,12 @@
 
 ## 与 zygo-skills 的关系
 
-- **币圈日更**：`zygo-skills/skills/crypto/crypto-post-flow/SKILL.md` 是编排真源（选币认领 → 初稿 → 卦象加持 → Stage 2.0 → 并行压缩/配图（≤4 次重试）→ Stage 2.5 → 带图分发 → 更新 `MEMORIES.md`）。`distribute-post` 对应 **`POST /crypto-mcp/distribute`**（`image` 必传；TG + X + Square）。Stage 4 仅提交 `skills/crypto/crypto-post-flow/MEMORIES.md`（图片风格记忆）。
+- **币圈日更**：`zygo-skills/skills/crypto/crypto-post-flow/SKILL.md` 是编排真源（显式 `symbol` → 初稿 → 卦象加持 → Stage 2.0 → 并行压缩/配图（≤4 次重试）→ Stage 2.5 → 带图分发 → 更新 `MEMORIES.md`）。`distribute-post` 对应 **`POST /crypto-mcp/distribute`**（`image` 必传；TG + X + Square）。Stage 4 仅提交 `skills/crypto/crypto-post-flow/MEMORIES.md`（图片风格记忆）。
 - **母婴科普**：`zygo-skills/skills/maternal-post-flow/SKILL.md` 是编排真源（选题 → 权威取证 → 合规前置 → 并行清洗/配图 → Stage 2.5 双重校验 → **只发 TG** → 更新 `MEMORIES.md`）。`maternal-distribute` 对应 **`POST /maternal-mcp/distribute`**（`title` + `text` + `image` 必传；`digest` 可选）。Stage 4 仅提交 `skills/maternal-post-flow/MEMORIES.md`（选题 + 配图风格）。
 - **crypto-analyst** 调用 `GET /crypto-mcp/all` 及 K 线图直链等（Base URL 以子技能为准，生产示例 `https://do2ge.com/tail`）。
 - 推荐在 **Cursor Cloud Automation** 中运行各 flow；本服务**不再**内置 Cursor Agent 定时器。
 
-部署时通常把 **本仓库** 与 **zygo-skills** 指向可用的远端分支，以便 Agent 技能与本服务 `crypto-mcp` / `maternal-mcp` 协同。人类可读设计见工作区 `docs/DESIGN-symbol-selection-pipeline.md`、`docs/DESIGN-flow-image.md`、`docs/DESIGN-maternal-post-flow.md`。
+部署时通常把 **本仓库** 与 **zygo-skills** 指向可用的远端分支，以便 Agent 技能与本服务 `crypto-mcp` / `maternal-mcp` 协同。人类可读设计见工作区 `docs/DESIGN-flow-image.md`、`docs/DESIGN-maternal-post-flow.md`。
 
 ## 重要端点（crypto-mcp 前缀为 `/crypto-mcp`）
 
@@ -37,14 +37,7 @@
 - **`GET /crypto-mcp/news?symbol=...`** — 指定币种免费新闻聚合（与 `sentiment` 同源，便于从涨幅榜挑选 symbol 后单独查询新闻）。
 - **`GET /crypto-mcp/charts?symbol=...`** — 生成 2h/4h 等 K 线输出信息（见实现）。
 - **`GET /crypto-mcp/charts/image?...`** — 直接返回已生成的 **PNG 图片**（用于 Agent「看图」）。
-- **`GET /crypto-mcp/all?symbol=...`** — 汇总时间与 bundle（若 symbol 在 12h 热榜，含 `bundle.hot_board_supplement`），并生成 K 线（**crypto-analyst 主调**）。
-- **`POST /crypto-mcp/subscription-inbox/seed`** — 仅开发用假数据；**生产验收** `uv run python scripts/test_pipeline_api.py`（默认 `https://do2ge.com/tail`，仅 §3 选币管线 GET；`--consume-inbox` 才测 POST consume）。
-- **`POST /crypto-mcp/subscription-inbox/consume`** — 取出 @wizzalert 待处理 raw 并**物理删除**（ingest skill）。
-- **`POST /crypto-mcp/hot-board/upsert`** — 热榜写入。ingest：`symbol` + `source=wizz_alert` + **`alert_reason`（必填）**；Merger：`source=merger_analyzer`（`merger` 仅库内评分，不返回 Agent）。
-- **`GET /crypto-mcp/hot-board/picker-snapshot`** — 热榜候选；`include_pick_ta=true` 时服务端并发返回每条 `pick_ta`（1h/2h/4h+市场，无 RSS）。`hot-board-pick` 用 `max_symbols=100&include_pick_ta=true`；排除 2h `pick_cooldown`。
-- **`POST /crypto-mcp/pick-slot`** — `hot-board-pick` 提交选中币 + `candidate_symbols`（落选写 2h 冷却）。
-- **`GET /crypto-mcp/pick-slot?consume=true`** — `crypto-post-flow` Stage 0 认领待发帖单槽。
-- **`GET /crypto-mcp/futures-symbols`** — 币安 U 本位 TRADING 合约列表（ingest 校验）。
+- **`GET /crypto-mcp/all?symbol=...`** — 汇总时间与 bundle，并生成 K 线（**crypto-analyst 主调**）。
 - **`POST /crypto-mcp/distribute`** — 表单提交 `symbol`、`text`、`image`（HTTP 层可选；**`crypto-post-flow` 经 `distribute-post` 调用时必传**），**统一向 Telegram、X、币安 Square 等渠道分发**。**BTC**（`BTC` / `BTCUSDT`）在 X 渠道会**自动**引用上一条 BTC 帖（服务端 `data/x_btc_last_post_id.txt` 自动读写，无需配置）；其它币可选 `x_reply_to_previous=true`（读 `X_LAST_POST_ID`）。
 
 **maternal-mcp 前缀为 `/maternal-mcp`**（母婴科普 flow 专用，只发 Telegram）：
@@ -65,12 +58,6 @@
 
 **币安**  
 - `BINANCE_API_KEY` / `BINANCE_API_SECRET` — 行情、账户、交易等能力。
-
-**选币管线（Telethon 监听 + 热榜，见工作区 `docs/DESIGN-symbol-selection-pipeline.md`）**  
-- `TG_LISTEN_API_ID` / `TG_LISTEN_API_HASH` — Telethon 用户号（监听 @wizzalert，仅写收件箱）。  
-- `TG_LISTEN_SESSION_PATH` — 可选，session 文件前缀，默认 `data/telegram_listen`。  
-- `WIZZ_ALERT_CHANNEL` — 默认 `wizzalert`。  
-- **Merger VOS**：后台每 15min 扫盘入热榜（规则见 `app/services/merger_analyzer.py` 顶部常量）。
 
 **分发（`distribution_service`）**  
 - Telegram：`TG_BOT_TOKEN`、`TG_CHAT_ID` 等（与上部分可复用，语义以发送渠道为准）。  
@@ -98,7 +85,7 @@ uvicorn app.app:app --host 0.0.0.0 --port 8000
 
 ## 数据与产物目录
 
-- **`data/`** — 运行期数据；选币管线 SQLite 默认 **`data/pipeline/pipeline.db`**（收件箱 + 热榜）。历史 `*_grok_prompt.md` 可删可留，服务端不再读取。  
+- **`data/`** — 运行期数据（如 X OAuth token、BTC 引用帖 ID 等）。历史 `*_grok_prompt.md` 可删可留，服务端不再读取。  
 - **`image/`** — K 线等生成图片的落盘位置（`charts/image` 会按规则查找当日 PNG）。  
 
 ## 相关仓库

@@ -13,4 +13,3 @@ requests>=2.31.0
 xdk>=0.9.0
 feedparser>=6.0.11
 matplotlib>=3.8.0
-telethon>=1.36.0

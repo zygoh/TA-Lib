@@ -77,7 +77,7 @@ async def is_trading_symbol(symbol: str) -> bool:
 
 
 async def resolve_base_to_symbol(base_asset: str) -> Optional[str]:
-    """Map Wizz base ticker to a TRADING USDT perpetual symbol."""
+    """Map base ticker to a TRADING USDT perpetual symbol."""
     base = (base_asset or "").strip().upper()
     if not base or not re.fullmatch(r"[A-Z0-9]{2,15}", base):
         return None
@@ -105,9 +105,3 @@ async def resolve_base_to_symbol(base_asset: str) -> Optional[str]:
             return cand
     return None
 
-
-async def validate_symbol_for_hot_board(symbol: str) -> str:
-    sym = ensure_symbol_usdt(symbol)
-    if not await is_trading_symbol(sym):
-        raise ValueError(f"symbol 不是币安 U 本位 TRADING 合约: {sym}")
-    return sym

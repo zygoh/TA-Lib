@@ -24,30 +24,6 @@ from app.models.crypto_mcp_schemas import (
     CryptoMcpAllResponse,
     DistributeResponse,
     GainersResponse,
-    InboxConsumeRequest,
-    InboxConsumeResponse,
-    InboxSeedRequest,
-    InboxSeedResponse,
-    InboxItem,
-    HotBoardUpsertRequest,
-    HotBoardUpsertResponse,
-    HotBoardEntry,
-    PickerSnapshotResponse,
-    PickSlotCommitRequest,
-    PickSlotCommitResponse,
-    PickSlotResponse,
-    FuturesSymbolsResponse,
-)
-from app.services.futures_symbols import list_trading_symbols, validate_symbol_for_hot_board
-from app.services.symbol_pipeline_store import (
-    PICK_COOLDOWN_HOURS,
-    inbox_append,
-    inbox_consume,
-    inbox_delete,
-    hot_board_upsert,
-    hot_board_list_for_picker,
-    pick_slot_commit,
-    pick_slot_get,
 )
 from app.services.crypto_mcp_service import (
     ensure_symbol_usdt,
@@ -57,7 +33,6 @@ from app.services.crypto_mcp_service import (
     fetch_top_gainers,
     generate_kline_charts,
 )
-from app.services.pick_ta_service import fetch_pick_ta_map
 from app.services.distribution_service import distribute_post
 
 logger = logging.getLogger(__name__)
@@ -98,134 +73,6 @@ async def news(symbol: str):
     """指定币种免费新闻聚合（等价于 sentiment，便于按涨幅榜选币后直查）"""
     target = ensure_symbol_usdt(symbol)
     return await get_sentiment(target)
-
-
-@router.post("/subscription-inbox/seed", response_model=InboxSeedResponse)
-async def subscription_inbox_seed(body: InboxSeedRequest):
-    """联调测试：写入 raw 收件箱（模拟 Telethon，不经过解析）。"""
-    channel = (body.channel or "wizzalert").lower()
-    inserted = 0
-    for item in body.items:
-        if not (item.raw_text or "").strip():
-            continue
-        inbox_append(channel_username=channel, raw_text=item.raw_text.strip())
-        inserted += 1
-    return {"inserted": inserted, "inbox_ids": []}
-
-
-@router.post("/subscription-inbox/consume", response_model=InboxConsumeResponse)
-async def subscription_inbox_consume(body: InboxConsumeRequest | None = None):
-    """取出待处理订阅消息并物理删除（consume 即删）。"""
-    req = body or InboxConsumeRequest()
-    rows = inbox_consume(channel=req.channel, limit=req.limit)
-    return {"items": [InboxItem(**row) for row in rows]}
-
-
-@router.delete("/subscription-inbox/{inbox_id}")
-async def subscription_inbox_delete(inbox_id: str):
-    """单条删除收件箱（consume 已批量删除时通常不需要）。"""
-    if not inbox_delete(inbox_id):
-        raise HTTPException(status_code=404, detail="inbox_id 不存在")
-    return {"ok": True}
-
-
-@router.post("/hot-board/upsert", response_model=HotBoardUpsertResponse)
-async def hot_board_upsert_endpoint(body: HotBoardUpsertRequest):
-    """清洗后的热榜写入（ingest skill / Merger）。"""
-    if body.source not in ("wizz_alert", "merger_analyzer"):
-        raise HTTPException(status_code=400, detail="source 必须是 wizz_alert 或 merger_analyzer")
-    if body.source == "wizz_alert" and not (body.alert_reason or "").strip():
-        raise HTTPException(status_code=400, detail="wizz_alert 必须提供 alert_reason（异动原因）")
-    try:
-        symbol = await validate_symbol_for_hot_board(body.symbol)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    entry = hot_board_upsert(
-        {
-            "symbol": symbol,
-            "base_asset": body.base_asset,
-            "source": body.source,
-            "alert_reason": (body.alert_reason or "").strip() or None,
-            "merger": body.merger,
-        }
-    )
-    return {"ok": True, "entry": HotBoardEntry(**entry)}
-
-
-@router.get("/hot-board/picker-snapshot", response_model=PickerSnapshotResponse)
-async def hot_board_picker_snapshot(
-    max_symbols: int = Query(50, ge=1, le=100),
-    include_bundle: bool = Query(False),
-    include_pick_ta: bool = Query(False),
-):
-    """供 hot-board-pick：有效热榜；include_pick_ta 时服务端并发聚合精简技术面。"""
-    if include_bundle and include_pick_ta:
-        raise HTTPException(
-            status_code=400,
-            detail="include_bundle 与 include_pick_ta 不可同时为 true",
-        )
-    time_data = get_shanghai_time()
-    rows = hot_board_list_for_picker(limit=max_symbols, exclude_cooldown=True)
-    pick_ta_map: dict[str, dict] = {}
-    if include_pick_ta and rows:
-        pick_ta_map = await fetch_pick_ta_map([r["symbol"] for r in rows])
-    entries: list[HotBoardEntry] = []
-    for row in rows:
-        sym = row["symbol"]
-        bundle = None
-        pick_ta = pick_ta_map.get(sym) if include_pick_ta else None
-        if include_bundle:
-            bundle = await get_crypto_bundle(sym)
-        item = {**row, "bundle": bundle, "pick_ta": pick_ta}
-        entries.append(HotBoardEntry(**item))
-    return {
-        "board_ttl_hours": 12,
-        "cooldown_hours": PICK_COOLDOWN_HOURS,
-        "cooldown_filtered": True,
-        "as_of": time_data["full"],
-        "entries": entries,
-    }
-
-
-@router.get("/pick-slot", response_model=PickSlotResponse)
-async def pick_slot_read(consume: bool = Query(False)):
-    """crypto-post-flow Stage 0：读取待发帖槽位；consume=true 时认领（标记 consumed）。"""
-    data = pick_slot_get(consume=consume)
-    return PickSlotResponse(**data)
-
-
-@router.post("/pick-slot", response_model=PickSlotCommitResponse)
-async def pick_slot_write(body: PickSlotCommitRequest):
-    """hot-board-pick 提交选中币；对本批 candidate_symbols 中落选者写入 2h 冷却。"""
-    try:
-        symbol = await validate_symbol_for_hot_board(body.symbol)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    candidates = [s.upper() for s in body.candidate_symbols]
-    if symbol not in candidates:
-        raise HTTPException(status_code=400, detail="symbol 必须属于 candidate_symbols")
-    try:
-        result = pick_slot_commit(
-            symbol=symbol,
-            selection_context=body.selection_context,
-            candidate_symbols=candidates,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return PickSlotCommitResponse(
-        ok=True,
-        symbol=result["symbol"],
-        cooldown_applied=result["cooldown_applied"],
-        cooldown_hours=result["cooldown_hours"],
-    )
-
-
-@router.get("/futures-symbols", response_model=FuturesSymbolsResponse)
-async def futures_symbols():
-    """TRADING 状态的币安 U 本位合约列表（供 ingest 校验）。"""
-    symbols = await list_trading_symbols()
-    return {"count": len(symbols), "symbols": symbols}
 
 
 @router.get("/gainers", response_model=GainersResponse)
@@ -366,4 +213,3 @@ async def distribute(
         result.get("square_sent"),
     )
     return result
-
