@@ -20,7 +20,7 @@
 ## 与 zygo-skills 的关系
 
 - **币圈日更**：`zygo-skills/skills/crypto/crypto-post-flow/SKILL.md` 是编排真源（显式 `symbol` → 初稿 → 卦象加持 → Stage 2.0 → 并行压缩/配图（≤4 次重试）→ Stage 2.5 → 带图分发 → 更新 `MEMORIES.md`）。`distribute-post` 对应 **`POST /crypto-mcp/distribute`**（`image` 必传；TG + X + Square）。Stage 4 仅提交 `skills/crypto/crypto-post-flow/MEMORIES.md`（图片风格记忆）。
-- **母婴科普**：`zygo-skills/skills/maternal-post-flow/SKILL.md` 是编排真源（选题 → 权威取证 → 合规前置 → 并行清洗/配图 → Stage 2.5 双重校验 → **只发 TG** → 更新 `MEMORIES.md`）。`maternal-distribute` 对应 **`POST /maternal-mcp/distribute`**（`title` + `text` + `image` 必传；`digest` 可选）。Stage 4 仅提交 `skills/maternal-post-flow/MEMORIES.md`（选题 + 配图风格）。
+- **母婴科普**：`zygo-skills/skills/maternal-post-flow/SKILL.md` 是编排真源（选题 → 权威取证 → 合规前置 → 并行清洗/配图 → Stage 2.5 双重校验 → **发 TG（主渠道）**→ 可选公众号草稿 → 更新 `MEMORIES.md`）。`maternal-distribute` 对应 **`POST /maternal-mcp/distribute`**（`title` + `text` + `image` 必传；`digest` 可选）；**可选** Stage 3.5 `maternal-wechat-draft` 对应 **`POST /maternal-mcp/wechat-draft`**（同稿同图入公众号草稿箱，默认不启用）。Stage 4 仅提交 `skills/maternal-post-flow/MEMORIES.md`（选题 + 配图风格）。
 - **crypto-analyst** 调用 `GET /crypto-mcp/all` 及 K 线图直链等（Base URL 以子技能为准，生产示例 `https://do2ge.com/tail`）。
 - 推荐在 **Cursor Cloud Automation** 中运行各 flow；本服务**不再**内置 Cursor Agent 定时器。
 
@@ -40,9 +40,11 @@
 - **`GET /crypto-mcp/all?symbol=...`** — 汇总时间与 bundle，并生成 K 线（**crypto-analyst 主调**）。
 - **`POST /crypto-mcp/distribute`** — 表单提交 `symbol`、`text`、`image`（HTTP 层可选；**`crypto-post-flow` 经 `distribute-post` 调用时必传**），**统一向 Telegram、X、币安 Square 等渠道分发**。**BTC**（`BTC` / `BTCUSDT`）在 X 渠道会**自动**引用上一条 BTC 帖（服务端 `data/x_btc_last_post_id.txt` 自动读写，无需配置）；其它币可选 `x_reply_to_previous=true`（读 `X_LAST_POST_ID`）。
 
-**maternal-mcp 前缀为 `/maternal-mcp`**（母婴科普 flow 专用，只发 Telegram）：
+**maternal-mcp 前缀为 `/maternal-mcp`**（母婴科普 flow 专用；主渠道 Telegram，另含**可选**公众号草稿）：
 
 - **`POST /maternal-mcp/distribute`** — 表单提交 `title`、`digest`（可选）、`text`、`image`（**必填**）。服务端顺序：① `sendPhoto`（封面 + title/digest 说明）→ ② `sendMessage`（完整正稿）。**只走 Telegram**，不碰 X / Square / 公众号。凭据读 `.env` 的 `TG_BOT_TOKEN` / `TG_CHAT_ID`（与上表分发节相同）。对应 **`zygo-skills`** 的 `maternal-post-flow` → `maternal-distribute`。
+
+- **`POST /maternal-mcp/wechat-draft`** — 表单 `title`、`content_html`、`image`（必填）；可选 `digest`、`author`、`content_source_url`。对应 `maternal-wechat-draft`（可选 Stage 3.5）。
 
   **Binance Square 行为**（对齐 [Binance square-post skill](https://github.com/binance/binance-skills-hub/tree/main/skills/binance/square-post)）：
   - 有 `image`：先走 OpenAPI 预签名上传 → 轮询处理 → 以 `contentType=1` + `imageList` 发图文短帖（`crypto-post-flow` 固定传 **1 张**）。
@@ -65,6 +67,9 @@
 - X 引用转帖：`X_LAST_POST_ID`（非 BTC 且 `x_reply_to_previous=true` 时读取；每次 X 发帖成功后更新）。**BTC 专用链**：无 env，由服务写入 `data/x_btc_last_post_id.txt`（仅 BTC/BTCUSDT 发帖时更新，与 ETH 等互不影响）。  
 - 币安广场：`SQUARE_OPENAPI_KEY` 或 `BINANCE_SQUARE_OPENAPI_KEY`（Square OpenAPI；与 [square-post skill](https://github.com/binance/binance-skills-hub/tree/main/skills/binance/square-post) 一致）。
 - 其他：`X_OAUTH1_CALLBACK` 等见代码。
+
+**公众号草稿（maternal 可选 Stage 3.5）**  
+- `WECHAT_APP_ID` / `WECHAT_APP_SECRET`
 
 ## 本地运行与容器
 

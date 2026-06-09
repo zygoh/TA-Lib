@@ -9,8 +9,12 @@ import mimetypes
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.models.crypto_mcp_schemas import MaternalDistributeResponse
+from app.models.crypto_mcp_schemas import (
+    MaternalDistributeResponse,
+    WechatDraftResponse,
+)
 from app.services.distribution_service import _send_telegram
+from app.services.wechat_draft_service import create_wechat_draft
 
 logger = logging.getLogger(__name__)
 
@@ -88,4 +92,44 @@ async def maternal_distribute(
         status="success",
         telegram_sent=True,
         notes=["cover_image: ok", "article_text: ok"],
+    )
+
+
+@router.post("/wechat-draft", response_model=WechatDraftResponse)
+async def maternal_wechat_draft(
+    title: str = Form(..., min_length=1, description="文章标题"),
+    content_html: str = Form(..., min_length=1, description="内联 CSS HTML"),
+    image: UploadFile = File(..., description="封面图，作 draft thumb"),
+    digest: str = Form("", description="摘要（≤120 字）"),
+    author: str = Form("", description="作者"),
+    content_source_url: str = Form("", description="阅读原文"),
+):
+    """maternal-post-flow Stage 3.5：写入公众号草稿箱。"""
+    clean_title = title.strip()
+    clean_html = content_html.strip()
+    if not clean_title:
+        raise HTTPException(status_code=400, detail="title 不能为空")
+    if not clean_html:
+        raise HTTPException(status_code=400, detail="content_html 不能为空")
+    if not _looks_like_image_upload(image):
+        raise HTTPException(status_code=400, detail="image 必须是图片文件")
+
+    image_bytes = await image.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="image 不能为空")
+
+    result = await create_wechat_draft(
+        title=clean_title,
+        content_html=clean_html,
+        image_bytes=image_bytes,
+        image_filename=image.filename or "cover.png",
+        image_content_type=image.content_type,
+        digest=digest.strip(),
+        author=author.strip(),
+        content_source_url=content_source_url.strip(),
+    )
+    return WechatDraftResponse(
+        status=result.get("status", "failed"),
+        media_id=result.get("media_id", ""),
+        notes=result.get("notes", []),
     )

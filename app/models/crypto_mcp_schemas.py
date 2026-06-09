@@ -79,3 +79,9 @@ class MaternalDistributeResponse(BaseModel):
     telegram_sent: bool
     notes: List[str] = Field(default_factory=list)
 
+
+class WechatDraftResponse(BaseModel):
+    status: str = Field(..., description="success / failed")
+    media_id: str = Field(default="", description="草稿 media_id（成功时非空）")
+    notes: List[str] = Field(default_factory=list)
+
