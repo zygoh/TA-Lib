@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y \
     make \
     wget \
     curl \
+    ffmpeg \
+    libimage-exiftool-perl \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装TA-Lib (最新版本 0.6.4)

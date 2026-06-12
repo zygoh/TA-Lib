@@ -11,7 +11,7 @@
 | **健康检查** | `GET /`、`GET /health` 返回服务状态与时间戳。 |
 | **技术指标** | 对币安期货 K 线计算指标（支持多种周期；见 `POST /calculate` 等）。 |
 | **交易与账户** | 在配置币安只读/交易密钥的前提下，拉取账户信息、处理交易信号等。 |
-| **图片相关** | 与 K 线/图表展示相关的图像能力（与 `Pillow`、图表服务配合）。 |
+| **图片相关** | 与 K 线/图表展示相关的图像能力（与 `Pillow`、图表服务配合）；**`POST /images/clean`** 清洗 AI 生图元数据（C2PA/EXIF，standard 4-pass，供两个 post-flow 强制调用）。 |
 | **crypto-mcp** | 给 Agent 用的聚合接口：时间、币安 U 本位涨幅榜、一揽子数据、情绪/新闻（免费 RSS + 公共新闻接口）、2h/4h K 线生成与取图、以及 **多平台帖子分发**。 |
 | **OAuth X** | 为 X（Twitter）OAuth2 等流程提供回调与路由；可按部署习惯挂在根路径或带前缀（如与反代 `.../tail` 配合）。 |
 
@@ -39,6 +39,11 @@
 - **`GET /crypto-mcp/charts/image?...`** — 直接返回已生成的 **PNG 图片**（用于 Agent「看图」）。
 - **`GET /crypto-mcp/all?symbol=...`** — 汇总时间与 bundle，并生成 K 线（**crypto-analyst 主调**）。
 - **`POST /crypto-mcp/distribute`** — 表单提交 `symbol`、`text`、`image`（HTTP 层可选；**`crypto-post-flow` 经 `distribute-post` 调用时必传**），**统一向 Telegram、X、币安 Square 等渠道分发**。**BTC**（`BTC` / `BTCUSDT`）在 X 渠道会**自动**引用上一条 BTC 帖（服务端 `data/x_btc_last_post_id.txt` 自动读写，无需配置）；其它币可选 `x_reply_to_previous=true`（读 `X_LAST_POST_ID`）。
+
+**图片元数据清洗（两个 post-flow 强制）**：
+
+- **`GET /images/clean/health`** — 检查 `ffmpeg` / `exiftool` 是否可用（`ready=true` 才应进入生图循环）。
+- **`POST /images/clean`** — 表单 `image`（必填）+ `mode=standard`（默认，4-pass 输出 JPEG）+ `quality=92`。`GenerateImage` 每张原图成功后**必须**调用；**严禁**把初始原图用于分发 / 落盘。响应头含 `X-Image-Clean-Ok`、`X-Image-Clean-Report`。契约见 `zygo-skills` 内 `flow-image/references/image-clean-config.md` 与 `maternal-flow-image/references/image-clean-config.md`。
 
 **maternal-mcp 前缀为 `/maternal-mcp`**（母婴科普 flow 专用；主渠道 Telegram，另含**默认开启**公众号草稿）：
 
@@ -86,7 +91,7 @@ uvicorn app.app:app --host 0.0.0.0 --port 8000
 
 **Docker**：`docker-compose.yml` 会构建本目录 Dockerfile，暴露 **8000**，挂载 `./data`、`./image` 与 `.env`；`TZ` 默认 `Asia/Shanghai`。`networks.nginx_network` 为 `external: true`，需你本机/服务器已存在同名网络，或按环境改成 `bridge` 等。
 
-构建镜像时 Dockerfile 会 **从上游编译安装 C 库 ta-lib 再装 Python 依赖**，首次构建会较慢。
+构建镜像时 Dockerfile 会 **从上游编译安装 C 库 ta-lib 再装 Python 依赖**，并安装 **`ffmpeg` + `libimage-exiftool-perl`**（供 `/images/clean`），首次构建会较慢。
 
 ## 数据与产物目录
 

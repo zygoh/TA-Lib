@@ -1,11 +1,17 @@
 """
-图片生成相关路由
+图片生成与元数据清洗相关路由
 """
+import json
 import logging
+import mimetypes
 from datetime import datetime
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from pathlib import Path
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response, StreamingResponse
+
 from app.models.schemas import ImageGenerateRequest
+from app.services.image_clean_service import ImageCleanError, check_image_clean_deps, clean_image_bytes
 from app.services.image_service import ImageGeneratorService
 
 logger = logging.getLogger(__name__)
@@ -89,3 +95,77 @@ def generate_image_endpoint(request: ImageGenerateRequest):
     except Exception as e:
         logger.error(f"生成图片失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"生成图片失败: {str(e)}")
+
+
+def _looks_like_image_upload(image: UploadFile) -> bool:
+    content_type = (image.content_type or "").lower()
+    if content_type.startswith("image/"):
+        return True
+    guessed, _ = mimetypes.guess_type(image.filename or "")
+    return bool(guessed and guessed.startswith("image/"))
+
+
+@router.get("/images/clean/health")
+def image_clean_health():
+    """检查 ffmpeg / exiftool 是否可用。"""
+    missing = check_image_clean_deps()
+    return {
+        "ready": not missing,
+        "missing": missing,
+        "default_mode": "standard",
+    }
+
+
+@router.post("/images/clean")
+async def clean_image_endpoint(
+    image: UploadFile = File(..., description="待清洗图片（GenerateImage 原图）"),
+    mode: str = Form("standard", description="清洗模式：standard（4-pass，输出 JPEG）| strip-only"),
+    quality: int = Form(92, ge=1, le=100, description="standard 模式 JPEG 质量"),
+):
+    """
+    清洗 AI 生图元数据（C2PA / EXIF / XMP 等）。
+
+    flow 契约：`GenerateImage` 成功后必须调用本接口，**严禁**将初始原图用于分发 / 落盘 / 校验交付。
+    standard 模式固定 4-pass，输出横版 4:3 JPEG（约 1536×1024）。
+    """
+    if not _looks_like_image_upload(image):
+        raise HTTPException(status_code=400, detail="image 必须是图片文件")
+
+    raw = await image.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="image 不能为空")
+
+    clean_mode = (mode or "standard").strip().lower()
+    if clean_mode not in {"standard", "strip-only"}:
+        raise HTTPException(status_code=400, detail=f"unsupported mode: {mode}")
+
+    missing = check_image_clean_deps()
+    if missing:
+        raise HTTPException(
+            status_code=503,
+            detail=f"image clean unavailable, missing: {', '.join(missing)}",
+        )
+
+    filename = image.filename or "image.png"
+    try:
+        body, content_type, report = clean_image_bytes(
+            raw,
+            filename,
+            mode=clean_mode,
+            quality=quality,
+        )
+    except ImageCleanError as exc:
+        logger.warning("image clean failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    out_name = Path(filename).stem + (".jpg" if clean_mode == "standard" else Path(filename).suffix or ".jpg")
+    headers = {
+        "Content-Disposition": f'attachment; filename="{out_name}"',
+        "Content-Length": str(len(body)),
+        "X-Image-Clean-Mode": report["mode"],
+        "X-Image-Clean-Ok": "true",
+        "X-Image-Clean-Width": str(report["width"]),
+        "X-Image-Clean-Height": str(report["height"]),
+        "X-Image-Clean-Report": json.dumps(report, ensure_ascii=False),
+    }
+    return Response(content=body, media_type=content_type, headers=headers)
