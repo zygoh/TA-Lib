@@ -100,6 +100,6 @@ uvicorn app.app:app --host 0.0.0.0 --port 8000
 
 ## 相关仓库
 
-- **zygo-skills**：**crypto-post-flow**（`crypto-mcp`）与 **maternal-post-flow**（`maternal-mcp`）编排契约；配图均为横版 4:3 原生 `GenerateImage` 1536×1024，不裁切。
+- **zygo-skills**：**crypto-post-flow**（`crypto-mcp`）与 **maternal-post-flow**（`maternal-mcp`）编排契约；AI 配图均为 `GenerateImage` → `POST /images/clean`（standard）→ 横版 4:3 **JPEG** 交付。
 
 若你需要「最小可跑清单」，请至少配置：**服务监听、币安只读或业务所需 key、分发文案渠道对应的 token。**
