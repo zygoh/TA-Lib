@@ -10,6 +10,7 @@ from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw
 
+from app.middleware.api_key_auth import ApiKeyMiddleware, get_lib_api_key
 from app.logging_config import setup_logging
 from app.models.schemas import HealthResponse
 from app.routers import indicators, images, trading, crypto_mcp, maternal_mcp, oauth_x
@@ -17,6 +18,11 @@ from app.services.pipeline_lifecycle import pipeline_lifespan
 
 setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
+
+if get_lib_api_key():
+    logger.info("LIB_API_KEY configured — API key auth enabled")
+else:
+    logger.warning("LIB_API_KEY not set — API key auth disabled")
 
 @asynccontextmanager
 async def _app_lifespan(application: FastAPI):
@@ -42,6 +48,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# LIB_API_KEY 非空时校验 X-API-Key / Authorization: Bearer（健康检查与 OAuth 回调除外）
+app.add_middleware(ApiKeyMiddleware)
 
 # 注册路由
 app.include_router(indicators.router)

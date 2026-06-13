@@ -18,6 +18,15 @@
 
 完整字段以 **`/docs`（Swagger）** 或 **`/redoc`** 为准。
 
+## API 鉴权（云端部署）
+
+设置环境变量 **`LIB_API_KEY`** 后，除 `GET /`、`GET /health`、`/docs`、`/redoc`、`/openapi.json`、`/oauth2/*` 外，**所有 HTTP 路由**须携带与之一致的密钥：
+
+- 请求头 `X-API-Key: <LIB_API_KEY>`，或
+- 请求头 `Authorization: Bearer <LIB_API_KEY>`
+
+未设置 `LIB_API_KEY` 时不启用鉴权（便于本地开发）。调用方（Cursor Automation / Agent）须在运行环境配置同名变量 **`LIB_API_KEY`**。
+
 ---
 
 ## crypto-mcp（前缀 `/crypto-mcp`）
@@ -32,7 +41,7 @@
 | `GET` | `/crypto-mcp/charts?symbol=` | 生成 2h/4h K 线元信息 |
 | `GET` | `/crypto-mcp/charts/image?...` | 返回 K 线 **PNG** |
 | `GET` | `/crypto-mcp/all?symbol=` | 时间 + bundle + K 线汇总 |
-| `POST` | `/crypto-mcp/distribute` | 表单 `symbol`、`text`、可选 `image`；向 **Telegram、X、币安 Square** 分发 |
+| `POST` | `/crypto-mcp/distribute` | 表单 `symbol`、`text`、`image`（必填）；**服务端先 standard 清洗再发往 TG / X / Square** |
 
 **`POST /crypto-mcp/distribute` 要点**
 
@@ -49,8 +58,8 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/maternal-mcp/distribute` | 表单 `title`、`text`、`image`（必填），可选 `digest`。**仅 Telegram**：先 `sendPhoto`（封面 + 说明）→ 再 `sendMessage`（正文） |
-| `POST` | `/maternal-mcp/wechat-draft` | 表单 `title`、`content_html`、`image`（必填）；可选 `digest`、`author`、`content_source_url`。写入公众号草稿箱 |
+| `POST` | `/maternal-mcp/distribute` | 表单 `title`、`text`、`image`（必填）；**服务端先 standard 清洗再发 TG** |
+| `POST` | `/maternal-mcp/wechat-draft` | 表单 `title`、`content_html`、`image`（必填）；**服务端先 standard 清洗再入草稿** |
 
 凭据：`TG_BOT_TOKEN` / `TG_CHAT_ID`；公众号 `WECHAT_APP_ID` / `WECHAT_APP_SECRET`。
 
@@ -60,10 +69,12 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/images/clean/health` | 检查 `ffmpeg` / `exiftool`；`ready=true` 方可调用清洗 |
+| `GET` | `/images/clean/health` | 返回当日缓存的 `ffmpeg` / `exiftool` 探测结果（GMT+8 **每日 0 点**刷新，非每次请求探测） |
 | `POST` | `/images/clean` | 表单 `image`（必填）、`mode=standard`（默认）、`quality=92`（1–100） |
 
-**`mode=standard`（默认）**：4-pass（ffmpeg 重编码 ×2 + exiftool 清元数据 ×2），输出 **JPEG**（横版约 1536×1024，±2%）。  
+**分发兜底**：`POST /crypto-mcp/distribute`、`POST /maternal-mcp/distribute`、`POST /maternal-mcp/wechat-draft` 上传的配图会在服务端再次执行 `mode=standard` 清洗后才发出（与 flow 侧清洗双重保障）。
+
+**`mode=standard`（默认）**：4-pass（Pass 1 ffmpeg + `gblur=sigma=0.3` → exiftool → ffmpeg → exiftool），输出 **JPEG**（横版约 1536×1024，±2%）。  
 **`mode=strip-only`**：仅剥离元数据，保留原格式。
 
 响应头：`X-Image-Clean-Ok`、`X-Image-Clean-Report`（JSON 报告）。
@@ -77,6 +88,9 @@ Docker 镜像须含 **`ffmpeg`** 与 **`libimage-exiftool-perl`**（见 Dockerfi
 ## 环境变量
 
 勿将真实密钥提交 Git。常见变量（是否必填以代码为准）：
+
+**API 鉴权**  
+- `LIB_API_KEY`：非空时启用全站 API Key 校验（云端部署推荐）；调用方使用同名环境变量
 
 **币安**  
 - `BINANCE_API_KEY` / `BINANCE_API_SECRET`
@@ -127,4 +141,4 @@ uvicorn app.app:app --host 0.0.0.0 --port 8000
 
 ## 最小可跑清单
 
-至少配置：**服务监听**、业务所需的 **币安密钥**、所用分发渠道的 **token**（TG / X / Square / 公众号按需）。调用 `/images/clean` 前确认 `GET /images/clean/health` 为 `ready=true`。
+至少配置：**服务监听**、业务所需的 **币安密钥**、所用分发渠道的 **token**（TG / X / Square / 公众号按需）。`GET /images/clean/health` 仅作运维查看当日 deps 缓存，flow 执行不依赖该接口。

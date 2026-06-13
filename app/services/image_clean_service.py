@@ -1,5 +1,5 @@
 """
-AI 生图元数据清洗（clean-image standard 模式同源：ffmpeg 双遍重编码 + exiftool 双遍清元数据）。
+AI 生图元数据清洗：standard 默认 4-pass（Pass 1 ffmpeg+gblur → exiftool → ffmpeg → exiftool）。
 """
 
 from __future__ import annotations
@@ -8,7 +8,9 @@ import logging
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -20,18 +22,56 @@ _MAX_QUALITY = 100
 _ASPECT_TOLERANCE = 0.02
 _TARGET_W = 1536
 _TARGET_H = 1024
+_BLUR_SIGMA = "0.3"
+_DEPS_TZ = ZoneInfo("Asia/Shanghai")
+
+_deps_cache_missing: list[str] | None = None
+_deps_cache_day: str | None = None
 
 
 class ImageCleanError(Exception):
     """图片清洗失败。"""
 
 
-def check_image_clean_deps() -> list[str]:
+def _deps_day_key() -> str:
+    return datetime.now(_DEPS_TZ).strftime("%Y-%m-%d")
+
+
+def refresh_image_clean_deps_cache(force: bool = False) -> list[str]:
+    """探测 ffmpeg / exiftool；同日重复调用默认直接返回缓存（每日 0 点 GMT+8 刷新）。"""
+    global _deps_cache_missing, _deps_cache_day
+    today = _deps_day_key()
+    if not force and _deps_cache_day == today and _deps_cache_missing is not None:
+        return list(_deps_cache_missing)
+
     missing: list[str] = []
     for name in _REQUIRED_BINARIES:
         if shutil.which(name) is None:
             missing.append(name)
-    return missing
+    _deps_cache_missing = missing
+    _deps_cache_day = today
+    logger.info(
+        "image clean deps checked day=%s ready=%s missing=%s",
+        today,
+        not missing,
+        missing,
+    )
+    return list(missing)
+
+
+def check_image_clean_deps() -> list[str]:
+    return refresh_image_clean_deps_cache()
+
+
+def image_clean_health_payload() -> dict:
+    missing = check_image_clean_deps()
+    return {
+        "ready": not missing,
+        "missing": missing,
+        "default_mode": "standard",
+        "deps_checked_on": _deps_cache_day,
+        "deps_check_timezone": "Asia/Shanghai",
+    }
 
 
 def _ffmpeg_quality(quality: int) -> int:
@@ -46,13 +86,23 @@ def _run(cmd: list[str]) -> None:
         raise ImageCleanError(stderr or f"command failed: {' '.join(cmd)}") from exc
 
 
-def _reencode(input_path: Path, output_path: Path, *, quality: int) -> None:
-    _run(
+def _reencode(
+    input_path: Path,
+    output_path: Path,
+    *,
+    quality: int,
+    blur: bool = False,
+) -> None:
+    cmd: list[str] = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+    ]
+    if blur:
+        cmd.extend(["-vf", f"gblur=sigma={_BLUR_SIGMA}"])
+    cmd.extend(
         [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(input_path),
             "-q:v",
             str(_ffmpeg_quality(quality)),
             "-map_metadata",
@@ -64,6 +114,7 @@ def _reencode(input_path: Path, output_path: Path, *, quality: int) -> None:
             str(output_path),
         ]
     )
+    _run(cmd)
 
 
 def _strip_metadata(path: Path) -> None:
@@ -113,7 +164,7 @@ def clean_image_file(
     清洗本地图片文件。
 
     mode:
-      - standard: 4-pass（ffmpeg → exiftool → ffmpeg → exiftool），输出 JPEG
+      - standard: 4-pass（Pass 1 ffmpeg+gblur → exiftool → ffmpeg → exiftool），输出 JPEG
       - strip-only: 仅 exiftool，保留原格式
     """
     missing = check_image_clean_deps()
@@ -141,7 +192,7 @@ def clean_image_file(
         with tempfile.TemporaryDirectory(prefix="ta-lib-image-clean-") as tmp:
             tmp_dir = Path(tmp)
             pass1 = tmp_dir / _TEMP_PASS1
-            _reencode(input_path, pass1, quality=quality)
+            _reencode(input_path, pass1, quality=quality, blur=True)
             _strip_metadata(pass1)
             _reencode(pass1, output_path, quality=quality)
             _strip_metadata(output_path)
@@ -208,6 +259,23 @@ def clean_image_bytes(
         inp.write_bytes(data)
         report = clean_image_file(inp, out, mode=mode, quality=quality)
         return out.read_bytes(), report["content_type"], report
+
+
+def clean_image_for_distribution(
+    data: bytes,
+    filename: str | None = None,
+    *,
+    quality: int = _DEFAULT_QUALITY,
+) -> tuple[bytes, str, str, dict]:
+    """分发 / 草稿上传前强制 standard 清洗，返回 (body, filename, content_type, report)。"""
+    body, content_type, report = clean_image_bytes(
+        data,
+        filename or "upload.png",
+        mode="standard",
+        quality=quality,
+    )
+    out_name = f"{Path(filename or 'image').stem}.jpg"
+    return body, out_name, content_type, report
 
 
 def _guess_mime(path: Path) -> str:

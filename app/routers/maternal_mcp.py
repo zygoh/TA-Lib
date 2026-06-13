@@ -14,6 +14,7 @@ from app.models.crypto_mcp_schemas import (
     WechatDraftResponse,
 )
 from app.services.distribution_service import _send_telegram
+from app.services.image_clean_service import ImageCleanError, clean_image_for_distribution
 from app.services.wechat_draft_service import create_wechat_draft
 
 logger = logging.getLogger(__name__)
@@ -29,12 +30,23 @@ def _looks_like_image_upload(image: UploadFile) -> bool:
     return bool(guessed and guessed.startswith("image/"))
 
 
+def _clean_distribution_upload(raw: bytes, filename: str | None) -> tuple[bytes, str, str]:
+    try:
+        body, out_name, content_type, _ = clean_image_for_distribution(raw, filename)
+        return body, out_name, content_type
+    except ImageCleanError as exc:
+        msg = str(exc)
+        if "missing dependencies" in msg:
+            raise HTTPException(status_code=503, detail=msg) from exc
+        raise HTTPException(status_code=400, detail=f"image clean failed: {msg}") from exc
+
+
 @router.post("/distribute", response_model=MaternalDistributeResponse)
 async def maternal_distribute(
     title: str = Form(..., min_length=1, description="标题（作封面图说明首行）"),
     text: str = Form(..., min_length=1, description="完整正稿正文"),
     digest: str = Form("", description="摘要（可选，作封面图说明第二行）"),
-    image: UploadFile = File(..., description="封面图，必填"),
+    image: UploadFile = File(..., description="封面图必填；服务端 standard 清洗后再发 TG"),
 ):
     """
     母婴 flow 专用：只发 Telegram，不碰 X / Square / 公众号。
@@ -51,9 +63,14 @@ async def maternal_distribute(
     if not _looks_like_image_upload(image):
         raise HTTPException(status_code=400, detail="image 必须是图片文件")
 
-    image_bytes = await image.read()
-    if not image_bytes:
+    raw_image = await image.read()
+    if not raw_image:
         raise HTTPException(status_code=400, detail="image 不能为空")
+
+    image_bytes, image_filename, image_content_type = _clean_distribution_upload(
+        raw_image,
+        image.filename,
+    )
 
     caption = clean_title
     if clean_digest:
@@ -62,8 +79,8 @@ async def maternal_distribute(
     cover_result = await _send_telegram(
         caption,
         image_bytes,
-        image.filename or "cover.png",
-        image.content_type,
+        image_filename,
+        image_content_type,
     )
     notes: list[str] = []
     if not cover_result.get("sent"):
@@ -99,7 +116,7 @@ async def maternal_distribute(
 async def maternal_wechat_draft(
     title: str = Form(..., min_length=1, description="文章标题"),
     content_html: str = Form(..., min_length=1, description="内联 CSS HTML"),
-    image: UploadFile = File(..., description="封面图，作 draft thumb"),
+    image: UploadFile = File(..., description="封面图必填；服务端 standard 清洗后入草稿 thumb"),
     digest: str = Form("", description="摘要（≤120 字）"),
     author: str = Form("", description="作者"),
     content_source_url: str = Form("", description="阅读原文"),
@@ -114,16 +131,21 @@ async def maternal_wechat_draft(
     if not _looks_like_image_upload(image):
         raise HTTPException(status_code=400, detail="image 必须是图片文件")
 
-    image_bytes = await image.read()
-    if not image_bytes:
+    raw_image = await image.read()
+    if not raw_image:
         raise HTTPException(status_code=400, detail="image 不能为空")
+
+    image_bytes, image_filename, image_content_type = _clean_distribution_upload(
+        raw_image,
+        image.filename,
+    )
 
     result = await create_wechat_draft(
         title=clean_title,
         content_html=clean_html,
         image_bytes=image_bytes,
-        image_filename=image.filename or "cover.png",
-        image_content_type=image.content_type,
+        image_filename=image_filename,
+        image_content_type=image_content_type,
         digest=digest.strip(),
         author=author.strip(),
         content_source_url=content_source_url.strip(),

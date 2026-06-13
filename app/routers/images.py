@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
 from app.models.schemas import ImageGenerateRequest
-from app.services.image_clean_service import ImageCleanError, check_image_clean_deps, clean_image_bytes
+from app.services.image_clean_service import ImageCleanError, clean_image_bytes, image_clean_health_payload
 from app.services.image_service import ImageGeneratorService
 
 logger = logging.getLogger(__name__)
@@ -107,13 +107,8 @@ def _looks_like_image_upload(image: UploadFile) -> bool:
 
 @router.get("/images/clean/health")
 def image_clean_health():
-    """检查 ffmpeg / exiftool 是否可用。"""
-    missing = check_image_clean_deps()
-    return {
-        "ready": not missing,
-        "missing": missing,
-        "default_mode": "standard",
-    }
+    """返回当日缓存的 ffmpeg / exiftool 探测结果（GMT+8 每日 0 点刷新，非每次请求探测）。"""
+    return image_clean_health_payload()
 
 
 @router.post("/images/clean")
@@ -126,7 +121,7 @@ async def clean_image_endpoint(
     清洗 AI 生图元数据（C2PA / EXIF / XMP 等）。
 
     flow 契约：`GenerateImage` 成功后必须调用本接口，**严禁**将初始原图用于分发 / 落盘 / 校验交付。
-    standard 模式固定 4-pass，输出横版 4:3 JPEG（约 1536×1024）。
+    standard 模式固定 4-pass（Pass 1 含 gblur），输出横版 4:3 JPEG（约 1536×1024）。
     """
     if not _looks_like_image_upload(image):
         raise HTTPException(status_code=400, detail="image 必须是图片文件")
@@ -139,7 +134,7 @@ async def clean_image_endpoint(
     if clean_mode not in {"standard", "strip-only"}:
         raise HTTPException(status_code=400, detail=f"unsupported mode: {mode}")
 
-    missing = check_image_clean_deps()
+    missing = image_clean_health_payload()["missing"]
     if missing:
         raise HTTPException(
             status_code=503,

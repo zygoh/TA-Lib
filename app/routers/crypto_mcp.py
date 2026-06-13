@@ -34,6 +34,7 @@ from app.services.crypto_mcp_service import (
     generate_kline_charts,
 )
 from app.services.distribution_service import distribute_post
+from app.services.image_clean_service import ImageCleanError, clean_image_for_distribution
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,7 @@ async def all_in_one(symbol: str):
 async def distribute(
     symbol: str = Form(..., min_length=1, description="BTC / ETH（可带USDT后缀）"),
     text: str = Form(..., min_length=1, description="待分发正文"),
-    image: UploadFile | None = File(None, description="可选图片文件，支持常见 image/* 类型"),
+    image: UploadFile = File(..., description="配图必填；服务端 standard 清洗后再发往各渠道"),
     x_reply_to_previous: bool = Form(
         False,
         description="可选：非 BTC 时发往 X 引用上一条成功帖（X_LAST_POST_ID）。BTC/BTCUSDT 服务端自动引用上一条 BTC 帖，无需传 true。",
@@ -175,7 +176,7 @@ async def distribute(
 ):
     """
     单接口统一分发到 Telegram / X / Binance Square。
-    - 三渠道均支持图文：有图优先图文，缺图降级纯文本
+    - 配图必填；上传图经服务端 standard 清洗（JPEG）后再分发
     - Square：`#topic` 与 `$COIN` 标签须写在 `text` 正文内，由 Square OpenAPI 服务端解析（见 Binance square-post skill）
     """
     target = ensure_symbol_usdt(symbol)
@@ -183,17 +184,22 @@ async def distribute(
     if not clean_text:
         raise HTTPException(status_code=400, detail="text 不能为空")
 
-    image_bytes: bytes | None = None
-    image_filename: str | None = None
-    image_content_type: str | None = None
-    if image is not None:
-        if not _looks_like_image_upload(image):
-            raise HTTPException(status_code=400, detail="image 必须是图片文件")
-        image_bytes = await image.read()
-        if not image_bytes:
-            raise HTTPException(status_code=400, detail="image 不能为空")
-        image_filename = image.filename or "upload.png"
-        image_content_type = image.content_type
+    if not _looks_like_image_upload(image):
+        raise HTTPException(status_code=400, detail="image 必须是图片文件")
+    raw_image = await image.read()
+    if not raw_image:
+        raise HTTPException(status_code=400, detail="image 不能为空")
+
+    try:
+        image_bytes, image_filename, image_content_type, _ = clean_image_for_distribution(
+            raw_image,
+            image.filename,
+        )
+    except ImageCleanError as exc:
+        msg = str(exc)
+        if "missing dependencies" in msg:
+            raise HTTPException(status_code=503, detail=msg) from exc
+        raise HTTPException(status_code=400, detail=f"image clean failed: {msg}") from exc
 
     result = await distribute_post(
         symbol_usdt=target,
@@ -207,7 +213,7 @@ async def distribute(
         "分发接口 symbol=%s status=%s 含图=%s Telegram=%s X=%s Square=%s",
         target,
         result.get("status"),
-        bool(image_bytes),
+        True,
         result.get("telegram_sent"),
         result.get("x_sent"),
         result.get("square_sent"),
