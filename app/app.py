@@ -59,7 +59,7 @@ app.include_router(trading.router)
 app.include_router(crypto_mcp.router)
 app.include_router(maternal_mcp.router)
 
-# X OAuth2：同时挂载根路径与 /tail，适配反代（如 https://do2ge.com/tail → 本服务）
+# X OAuth2：同时挂载根路径与 /tail，适配反代（如 https://example.com/tail → 本服务）
 app.include_router(oauth_x.router)
 app.include_router(oauth_x.router, prefix="/tail")
 

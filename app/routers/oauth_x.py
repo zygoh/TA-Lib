@@ -4,11 +4,11 @@ X Developer Platform OAuth 2.0（PKCE）浏览器回调。
 与 distribution_service 使用的 scope / 环境变量一致：
   X_CLIENT_ID、X_REDIRECT_URI（须与本路由对外 URL 完全一致）；Native App 可无 X_CLIENT_SECRET。
 
-对外示例（反代把 https://do2ge.com/tail 指到本服务时）：
-  回调：https://do2ge.com/tail/oauth2/callback
-  发起授权：浏览器打开 https://do2ge.com/tail/oauth2/start
+对外示例（反代把 https://example.com/tail 指到本服务时）：
+  回调：https://example.com/tail/oauth2/callback
+  发起授权：浏览器打开 https://example.com/tail/oauth2/start
 
-若网关去掉 /tail 前缀再转发到 uvicorn，亦可使用 https://do2ge.com/oauth2/start。
+若网关去掉 /tail 前缀再转发到 uvicorn，亦可使用 https://example.com/oauth2/start。
 """
 
 from __future__ import annotations
